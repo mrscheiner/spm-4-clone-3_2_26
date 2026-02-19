@@ -422,6 +422,15 @@ const ALL_PASSES_BACKUP_KEY = 'all_passes_backup_v1';
 
 
 const INITIAL_BACKUP_DATA = {
+  salesData: {} as Record<string, Record<string, any>>,
+  seatPairs: [
+    { id: "pair1", section: "129", row: "26", seats: "24-25", seasonCost: 6651.12 },
+    { id: "pair2", section: "308", row: "8", seats: "1-2", seasonCost: 3505.32 },
+    { id: "pair3", section: "325", row: "5", seats: "6-7", seasonCost: 3505.32 }
+  ]
+};
+
+const _INITIAL_BACKUP_DATA_REMOVED = {
   salesData: {
     "1": {
       "pair1": {"gameId":"1","pairId":"pair1","section":"129","row":"26","seats":"24-25","price":234,"paymentStatus":"paid","soldDate":"2025-10-15T02:13:21.793Z"},
@@ -626,7 +635,9 @@ type TicketSaleSeedRow = {
   tickets: { section: string; row: string; seat_number: number }[];
 };
 
-const PANTHERS_TICKET_SALES_SEED: TicketSaleSeedRow[] = [
+const PANTHERS_TICKET_SALES_SEED: TicketSaleSeedRow[] = [];
+
+const _PANTHERS_TICKET_SALES_SEED_REMOVED: TicketSaleSeedRow[] = [
   { totalPrice: 120.58, eventName: 'Boston Bruins at Florida Panthers', eventStartTime: '2026-02-05T00:00:00.000Z', tickets: [{ section: '325', row: '5', seat_number: 6 }, { section: '325', row: '5', seat_number: 7 }] },
   { totalPrice: 73.64, eventName: 'Utah Mammoth at Florida Panthers', eventStartTime: '2026-01-28T00:00:00.000Z', tickets: [{ section: '325', row: '5', seat_number: 6 }, { section: '325', row: '5', seat_number: 7 }] },
   { totalPrice: 40, eventName: 'Buffalo Sabres at Florida Panthers', eventStartTime: '2026-02-03T00:00:00.000Z', tickets: [{ section: '325', row: '5', seat_number: 6 }, { section: '325', row: '5', seat_number: 7 }] },
@@ -1278,7 +1289,54 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
   const loadData = useCallback(async () => {
     try {
       console.log('[SeasonPass] Loading data from storage...');
-      
+
+      const SALES_WIPE_KEY = 'sales_wiped_v2';
+      const alreadyWiped = await AsyncStorage.getItem(SALES_WIPE_KEY);
+      if (!alreadyWiped) {
+        console.log('[SeasonPass] One-time sales wipe: clearing all salesData from stored passes and backups...');
+        const rawPasses = await AsyncStorage.getItem(SEASON_PASSES_KEY);
+        if (rawPasses) {
+          try {
+            const parsed = JSON.parse(rawPasses);
+            if (Array.isArray(parsed)) {
+              const wiped = parsed.map((p: any) => ({ ...p, salesData: {} }));
+              await AsyncStorage.setItem(SEASON_PASSES_KEY, JSON.stringify(wiped));
+              console.log('[SeasonPass] Wiped salesData from', wiped.length, 'passes in primary storage');
+            }
+          } catch (e) {
+            console.warn('[SeasonPass] Failed to wipe sales from primary storage', e);
+          }
+        }
+        const rawBackup = await AsyncStorage.getItem(ALL_PASSES_BACKUP_KEY);
+        if (rawBackup) {
+          try {
+            const parsed = JSON.parse(rawBackup);
+            if (parsed && Array.isArray(parsed.passes)) {
+              parsed.passes = parsed.passes.map((p: any) => ({ ...p, salesData: {} }));
+              await AsyncStorage.setItem(ALL_PASSES_BACKUP_KEY, JSON.stringify(parsed));
+              console.log('[SeasonPass] Wiped salesData from all-passes backup');
+            }
+          } catch (e) {
+            console.warn('[SeasonPass] Failed to wipe sales from backup', e);
+          }
+        }
+        const rawMaster = await AsyncStorage.getItem(MASTER_BACKUP_KEY);
+        if (rawMaster) {
+          try {
+            const parsed = JSON.parse(rawMaster);
+            if (parsed && Array.isArray(parsed.seasonPasses)) {
+              parsed.seasonPasses = parsed.seasonPasses.map((p: any) => ({ ...p, salesData: {} }));
+              await AsyncStorage.setItem(MASTER_BACKUP_KEY, JSON.stringify(parsed));
+              console.log('[SeasonPass] Wiped salesData from master backup');
+            }
+          } catch (e) {
+            console.warn('[SeasonPass] Failed to wipe sales from master backup', e);
+          }
+        }
+        await AsyncStorage.setItem(SALES_WIPE_KEY, 'true');
+        console.log('[SeasonPass] ✅ One-time sales wipe complete');
+      }
+
       const diag = await runDiagnostics();
       
       if (!diag.parseSuccess) {
