@@ -1459,52 +1459,7 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     try {
       console.log('[SeasonPass] Loading data from storage...');
 
-      const SALES_WIPE_KEY = 'sales_wiped_v2';
-      const alreadyWiped = await AsyncStorage.getItem(SALES_WIPE_KEY);
-      if (!alreadyWiped) {
-        console.log('[SeasonPass] One-time sales wipe: clearing all salesData from stored passes and backups...');
-        const rawPasses = await AsyncStorage.getItem(SEASON_PASSES_KEY);
-        if (rawPasses) {
-          try {
-            const parsed = JSON.parse(rawPasses);
-            if (Array.isArray(parsed)) {
-              const wiped = parsed.map((p: any) => ({ ...p, salesData: {} }));
-              await AsyncStorage.setItem(SEASON_PASSES_KEY, JSON.stringify(wiped));
-              console.log('[SeasonPass] Wiped salesData from', wiped.length, 'passes in primary storage');
-            }
-          } catch (e) {
-            console.warn('[SeasonPass] Failed to wipe sales from primary storage', e);
-          }
-        }
-        const rawBackup = await AsyncStorage.getItem(ALL_PASSES_BACKUP_KEY);
-        if (rawBackup) {
-          try {
-            const parsed = JSON.parse(rawBackup);
-            if (parsed && Array.isArray(parsed.passes)) {
-              parsed.passes = parsed.passes.map((p: any) => ({ ...p, salesData: {} }));
-              await AsyncStorage.setItem(ALL_PASSES_BACKUP_KEY, JSON.stringify(parsed));
-              console.log('[SeasonPass] Wiped salesData from all-passes backup');
-            }
-          } catch (e) {
-            console.warn('[SeasonPass] Failed to wipe sales from backup', e);
-          }
-        }
-        const rawMaster = await AsyncStorage.getItem(MASTER_BACKUP_KEY);
-        if (rawMaster) {
-          try {
-            const parsed = JSON.parse(rawMaster);
-            if (parsed && Array.isArray(parsed.seasonPasses)) {
-              parsed.seasonPasses = parsed.seasonPasses.map((p: any) => ({ ...p, salesData: {} }));
-              await AsyncStorage.setItem(MASTER_BACKUP_KEY, JSON.stringify(parsed));
-              console.log('[SeasonPass] Wiped salesData from master backup');
-            }
-          } catch (e) {
-            console.warn('[SeasonPass] Failed to wipe sales from master backup', e);
-          }
-        }
-        await AsyncStorage.setItem(SALES_WIPE_KEY, 'true');
-        console.log('[SeasonPass] ✅ One-time sales wipe complete');
-      }
+      console.log('[SeasonPass] Checking stored passes for empty salesData to re-seed...');
 
       const diag = await runDiagnostics();
       
@@ -1615,6 +1570,22 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
       }
 
       console.log('[SeasonPass] Final state - passes:', passes.length, 'activeId:', activeId);
+
+  // Re-seed: if Panthers pass exists but has empty salesData, repopulate from INITIAL_BACKUP_DATA
+  let reseedNeeded = false;
+  passes = passes.map(p => {
+    if (p.id === 'sp_imported_panthers_2025' && (!p.salesData || Object.keys(p.salesData).length === 0)) {
+      console.log('[SeasonPass] Panthers pass has empty salesData - re-seeding from INITIAL_BACKUP_DATA');
+      reseedNeeded = true;
+      return { ...p, salesData: transformSalesData(INITIAL_BACKUP_DATA.salesData), seatPairs: INITIAL_BACKUP_DATA.seatPairs };
+    }
+    return p;
+  });
+  if (reseedNeeded) {
+    await AsyncStorage.setItem(SEASON_PASSES_KEY, JSON.stringify(passes));
+    await saveAllPassesBackup(passes);
+    console.log('[SeasonPass] ✅ Re-seeded Panthers salesData and persisted');
+  }
 
   // Normalize passes to ensure `games` and related fields always exist
   passes = passes.map(normalizeSeasonPass);
