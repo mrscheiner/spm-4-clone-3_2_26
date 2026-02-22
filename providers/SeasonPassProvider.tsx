@@ -17,6 +17,30 @@ import { parseSeatsCount } from '@/lib/seats';
 
 const BACKUP_VERSION = '1.0';
 
+/**
+ * Safe object iteration helper that avoids Hermes engine crashes on macOS Catalyst.
+ * The Hermes VM can crash with EXC_BAD_ACCESS when Object.entries/Object.getOwnPropertyDescriptor
+ * is called on certain deeply nested objects during startup. This helper uses Object.keys
+ * with manual value lookup which is more stable.
+ */
+function safeObjectEntries<T>(obj: Record<string, T> | null | undefined): Array<[string, T]> {
+  if (!obj || typeof obj !== 'object') return [];
+  try {
+    const keys = Object.keys(obj);
+    const result: Array<[string, T]> = [];
+    for (const key of keys) {
+      const val = obj[key];
+      if (val !== undefined) {
+        result.push([key, val]);
+      }
+    }
+    return result;
+  } catch (e) {
+    console.warn('[safeObjectEntries] Error iterating object:', e);
+    return [];
+  }
+}
+
 async function withMasterTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   
@@ -420,8 +444,16 @@ const DATA_IMPORTED_KEY = 'data_imported_v1';
 const MASTER_BACKUP_KEY = 'master_backup_v1';
 const ALL_PASSES_BACKUP_KEY = 'all_passes_backup_v1';
 
+// IMPORTANT: Use a lazy getter function to avoid immediate parsing of this large object at module load time.
+// This prevents a Hermes engine crash (EXC_BAD_ACCESS) that occurs when Object.getOwnPropertyDescriptor
+// is called on deeply nested objects during startup - especially on macOS Catalyst builds.
+let _cachedInitialBackupData: { salesData: Record<string, Record<string, any>>; seatPairs: any[] } | null = null;
 
-const INITIAL_BACKUP_DATA = {
+function getInitialBackupData() {
+  if (_cachedInitialBackupData) return _cachedInitialBackupData;
+  
+  try {
+    _cachedInitialBackupData = {
   salesData: {
     "p1": {
       "pair1": {"gameId":"p1","pairId":"pair1","section":"129","row":"26","seats":"24-25","price":33.77,"paymentStatus":"paid","soldDate":"2025-10-15T02:12:54.008Z"},
@@ -597,6 +629,26 @@ const INITIAL_BACKUP_DATA = {
     { id: "pair2", section: "308", row: "8", seats: "1-2", seasonCost: 1752.16 },
     { id: "pair3", section: "325", row: "5", seats: "6-7", seasonCost: 1752.16 }
   ]
+    };
+  } catch (e) {
+    console.error('[SeasonPass] Failed to initialize backup data:', e);
+    // Return safe fallback to prevent crash
+    _cachedInitialBackupData = {
+      salesData: {},
+      seatPairs: [
+        { id: "pair1", section: "129", row: "26", seats: "24-25", seasonCost: 3326.06 },
+        { id: "pair2", section: "308", row: "8", seats: "1-2", seasonCost: 1752.16 },
+        { id: "pair3", section: "325", row: "5", seats: "6-7", seasonCost: 1752.16 }
+      ]
+    };
+  }
+  return _cachedInitialBackupData;
+}
+
+// Backward-compatible alias - use getInitialBackupData() for lazy loading
+const INITIAL_BACKUP_DATA = {
+  get salesData() { return getInitialBackupData().salesData; },
+  get seatPairs() { return getInitialBackupData().seatPairs; }
 };
 
 const _INITIAL_BACKUP_DATA_REMOVED = {
@@ -773,26 +825,46 @@ function normalizePaymentStatus(status: string): 'Pending' | 'Per Seat' | 'Paid'
 function transformSalesData(rawSalesData: Record<string, Record<string, any>>): Record<string, Record<string, SaleRecord>> {
   const transformed: Record<string, Record<string, SaleRecord>> = {};
 
-  Object.entries(rawSalesData).forEach(([gameId, gameSales]) => {
-    transformed[gameId] = {};
-    Object.entries(gameSales).forEach(([pairId, sale]) => {
-      const seatsStr = sale?.seats || '';
-      const seatCount = parseSeatsCount(seatsStr);
+  // Defensive check: ensure rawSalesData is a valid object
+  if (!rawSalesData || typeof rawSalesData !== 'object') {
+    console.warn('[transformSalesData] Invalid input, returning empty object');
+    return transformed;
+  }
 
-      transformed[gameId][pairId] = {
-        id: `${gameId}_${pairId}`,
-        gameId: sale.gameId,
-        pairId: sale.pairId,
-        section: sale.section,
-        row: sale.row,
-        seats: seatsStr,
-        seatCount,
-        price: sale.price,
-        paymentStatus: normalizePaymentStatus(sale.paymentStatus),
-        soldDate: sale.soldDate,
-      };
-    });
-  });
+  try {
+    // Use Object.keys + manual iteration instead of Object.entries to avoid Hermes crash
+    // on certain macOS builds when iterating deeply nested objects
+    const gameIds = Object.keys(rawSalesData);
+    for (const gameId of gameIds) {
+      const gameSales = rawSalesData[gameId];
+      if (!gameSales || typeof gameSales !== 'object') continue;
+      
+      transformed[gameId] = {};
+      const pairIds = Object.keys(gameSales);
+      for (const pairId of pairIds) {
+        const sale = gameSales[pairId];
+        if (!sale || typeof sale !== 'object') continue;
+        
+        const seatsStr = sale?.seats || '';
+        const seatCount = parseSeatsCount(seatsStr);
+
+        transformed[gameId][pairId] = {
+          id: `${gameId}_${pairId}`,
+          gameId: sale.gameId ?? gameId,
+          pairId: sale.pairId ?? pairId,
+          section: sale.section ?? '',
+          row: sale.row ?? '',
+          seats: seatsStr,
+          seatCount,
+          price: sale.price ?? 0,
+          paymentStatus: normalizePaymentStatus(sale.paymentStatus ?? 'pending'),
+          soldDate: sale.soldDate ?? new Date().toISOString(),
+        };
+      }
+    }
+  } catch (e) {
+    console.error('[transformSalesData] Error transforming sales data:', e);
+  }
 
   return transformed;
 }
@@ -1632,8 +1704,8 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
       (pClone.seatPairs || []).forEach((sp: any) => { seatPairsMap[sp.id] = sp.seats; });
 
       const sales = pClone.salesData || {};
-      Object.entries(sales).forEach(([gameId, gameSales]: any) => {
-        Object.entries(gameSales).forEach(([pairId, sale]: any) => {
+      safeObjectEntries(sales).forEach(([gameId, gameSales]: any) => {
+        safeObjectEntries(gameSales).forEach(([pairId, sale]: any) => {
           if (!sale) return;
           // If seatCount is missing or falsy, try to infer
           if (typeof sale.seatCount !== 'number' || sale.seatCount <= 0) {
@@ -1709,10 +1781,10 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
             const gamesById: Record<string, Game> = {};
             (p.games || []).forEach(g => { gamesById[g.id] = g; });
 
-            Object.entries(salesClone).forEach(([gameId, gameSales]: any) => {
+            safeObjectEntries(salesClone).forEach(([gameId, gameSales]: any) => {
               const game = gamesById[gameId];
               if (!game) return;
-              Object.entries(gameSales).forEach(([pairId, sale]: any) => {
+              safeObjectEntries(gameSales).forEach(([pairId, sale]: any) => {
                 if (!sale) return;
                 if (!sale.opponentLogo && game.opponentLogo) {
                   sale.opponentLogo = game.opponentLogo;
@@ -3646,14 +3718,9 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
         return `"${q}"`;
       };
 
-      // Build CSV file content for per-game rows (one line per game that has sales)
-      // Also build a TSV of per-sale rows and copy that to clipboard for drill-down in Excel.
+      // Build CSV with one row per SALE (not per game) so it can be re-imported
       const csvRows: string[] = [];
-      csvRows.push(['Team', 'League', 'Season', 'GameID', 'GameNumber', 'Opponent', 'GameDate', 'Time', 'PairsSold', 'SeatsSold', 'Revenue', 'PendingPayments'].join(','));
-
-      const tsvRows: string[] = [];
-      // per-sale TSV headers for clipboard (detailed rows)
-      tsvRows.push(['Team', 'League', 'Season', 'GameID', 'Opponent', 'GameDate', 'Section', 'Row', 'Seats', 'SalePrice', 'PaymentStatus', 'Sold Date'].join('\t'));
+      csvRows.push(['Team', 'League', 'Season', 'GameID', 'Opponent', 'GameDate', 'Section', 'Row', 'Seats', 'SeatCount', 'SalePrice', 'PaymentStatus', 'Sold Date'].join(','));
 
       seasonPasses.forEach(pass => {
         const orderedGames = [...pass.games].sort((a, b) => {
@@ -3667,19 +3734,10 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
 
         orderedGames.forEach(game => {
           const gameSales = pass.salesData[game.id] || {};
-          const soldPairs = Object.keys(gameSales).length;
 
-          let seatsSold = 0;
-          let revenue = 0;
-          let pending = 0;
-
+          // One row per sale
           Object.values(gameSales).forEach((sale: any) => {
             const sc = typeof sale.seatCount === 'number' ? sale.seatCount : parseSeatsCount(sale?.seats);
-            seatsSold += sc;
-            revenue += sale.price || 0;
-            if (sale.paymentStatus === 'Pending') pending += 1;
-
-            // collect per-sale TSV rows for clipboard
             const saleRow = [
               pass.teamName,
               (pass.leagueId || '').toUpperCase(),
@@ -3689,57 +3747,21 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
               game.date || '',
               sale.section || '',
               sale.row || '',
-              sale.seats || (sc || ''),
-              (typeof sale.price === 'number') ? Number(sale.price).toFixed(2) : '',
-              sale.paymentStatus || '',
+              sale.seats || '',
+              String(sc || 2),
+              (typeof sale.price === 'number') ? Number(sale.price).toFixed(2) : '0.00',
+              sale.paymentStatus || 'Paid',
               sale.soldDate ? new Date(sale.soldDate).toLocaleDateString() : '',
             ];
-            tsvRows.push(saleRow.map(r => (r === null || r === undefined) ? '' : String(r)).join('\t'));
+            csvRows.push(saleRow.map(escape).join(','));
           });
-
-          if (soldPairs === 0) {
-            const gameRow = [
-              pass.teamName,
-              (pass.leagueId || '').toUpperCase(),
-              pass.seasonLabel,
-              game.id,
-              game.gameNumber || '',
-              game.opponent || 'Unknown',
-              game.date || '',
-              game.time || '',
-              '0',
-              '0',
-              '0.00',
-              '0',
-            ];
-            csvRows.push(gameRow.map(escape).join(','));
-            return;
-          }
-
-          const gameRow = [
-            pass.teamName,
-            (pass.leagueId || '').toUpperCase(),
-            pass.seasonLabel,
-            game.id,
-            game.gameNumber || '',
-            game.opponent || 'Unknown',
-            game.date || '',
-            game.time || '',
-            String(soldPairs),
-            String(seatsSold),
-            revenue.toFixed(2),
-            String(pending),
-          ];
-
-          csvRows.push(gameRow.map(escape).join(','));
         });
       });
 
       const csvContent = '\uFEFF' + csvRows.join('\n'); // prepend BOM so Excel recognizes UTF-8
-      const tsvContent = tsvRows.join('\n');
 
-      // Save the CSV as a file (native share/download), and copy TSV to clipboard for quick Excel paste
-      const fileName = `SeasonPassBackup_${new Date().toISOString().split('T')[0]}.csv`;
+      // Save the CSV as a file
+      const fileName = `SeasonPassSales_${new Date().toISOString().split('T')[0]}.csv`;
 
       if (Platform.OS === 'web') {
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -3749,8 +3771,6 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
         a.download = fileName;
         a.click();
         URL.revokeObjectURL(url);
-        // Also copy TSV to clipboard to help Excel users
-        try { await Clipboard.setStringAsync(tsvContent); } catch {}
         return true;
       }
 
@@ -3758,12 +3778,12 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
       const fileUri = FileSystem.documentDirectory + fileName;
       await FileSystem.writeAsStringAsync(fileUri, csvContent, { encoding: FileSystem.EncodingType.UTF8 });
 
-      // Copy TSV to clipboard so pasting into Excel/Numbers yields separate columns
+      // Also copy to clipboard for easy paste
       try {
-        await Clipboard.setStringAsync(tsvContent);
-        console.log('[SeasonPass] TSV copied to clipboard for Excel paste');
+        await Clipboard.setStringAsync(csvContent);
+        console.log('[SeasonPass] CSV copied to clipboard');
       } catch (e: any) {
-        console.warn('[SeasonPass] Failed to copy TSV to clipboard:', e);
+        console.warn('[SeasonPass] Failed to copy CSV to clipboard:', e);
       }
 
       if (await Sharing.isAvailableAsync()) {
@@ -3775,13 +3795,207 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
         console.log('[SeasonPass] CSV saved to:', fileUri);
       }
 
-      console.log('[SeasonPass] Exported CSV file and copied TSV to clipboard');
+      console.log('[SeasonPass] Exported CSV file with', csvRows.length - 1, 'sales');
       return true;
     } catch (e) {
       console.error('[SeasonPass] Export CSV failed:', e);
       return false;
     }
   }, [seasonPasses]);
+
+  // ============ SIMPLIFIED IMPORT/EXPORT ============
+  // These functions export in a format that can be directly re-imported without any validation issues.
+
+  /**
+   * Import from a JSON backup file. Accepts the exact format that exportAsJSON produces.
+   * Completely replaces all data with the backup contents.
+   */
+  const importFromJSONBackup = useCallback(async (jsonString: string): Promise<{ success: boolean; message: string }> => {
+    try {
+      console.log('[Import] Parsing JSON backup, length:', jsonString.length);
+      const data = JSON.parse(jsonString);
+      
+      // Validate structure
+      if (!data.seasonPasses || !Array.isArray(data.seasonPasses)) {
+        return { success: false, message: 'Invalid backup: missing seasonPasses array' };
+      }
+
+      // Normalize and restore
+      const normalized = data.seasonPasses.map(normalizeSeasonPass);
+      const activeId = data.activeSeasonPassId || (normalized.length > 0 ? normalized[0].id : null);
+
+      // Save to storage
+      await AsyncStorage.setItem(SEASON_PASSES_KEY, JSON.stringify(normalized));
+      await AsyncStorage.setItem(ACTIVE_PASS_KEY, JSON.stringify(activeId));
+      await AsyncStorage.setItem(DATA_IMPORTED_KEY, 'true');
+
+      // Update state
+      setSeasonPasses(normalized);
+      setActiveSeasonPassId(activeId);
+      setNeedsSetup(normalized.length === 0);
+
+      const totalSales = normalized.reduce((sum: number, pass: SeasonPass) => {
+        return sum + Object.values(pass.salesData || {}).reduce((gSum: number, gameSales: any) => {
+          return gSum + Object.keys(gameSales || {}).length;
+        }, 0);
+      }, 0);
+
+      console.log('[Import] ✅ Restored', normalized.length, 'passes with', totalSales, 'sales');
+      return { success: true, message: `Restored ${normalized.length} season pass(es) with ${totalSales} sales` };
+    } catch (e: any) {
+      console.error('[Import] JSON import failed:', e);
+      return { success: false, message: `Import failed: ${e.message || 'Unknown error'}` };
+    }
+  }, []);
+
+  /**
+   * Import from CSV in the exact format that exportAsCSV produces.
+   * This imports sales data into the active season pass.
+   * CSV format: Team,League,Season,GameID,Opponent,GameDate,Section,Row,Seats,SeatCount,SalePrice,PaymentStatus,Sold Date
+   */
+  const importFromCSVBackup = useCallback(async (csvString: string): Promise<{ success: boolean; message: string }> => {
+    try {
+      if (!activeSeasonPassId) {
+        return { success: false, message: 'No active season pass. Create or select a pass first.' };
+      }
+
+      console.log('[Import] Parsing CSV backup, length:', csvString.length);
+      const lines = csvString.split(/\r?\n/).filter(line => line.trim());
+      if (lines.length < 2) {
+        return { success: false, message: 'CSV file is empty or has no data rows' };
+      }
+
+      // Parse header - use FIRST occurrence of each column (ignore duplicates at the end)
+      const header = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+      const colIdx: Record<string, number> = {};
+      header.forEach((h, i) => { 
+        const key = h.toLowerCase();
+        // Only use first occurrence of each column name
+        if (!(key in colIdx)) {
+          colIdx[key] = i; 
+        }
+      });
+      
+      console.log('[Import] Header columns:', header.slice(0, 13).join(', '));
+      console.log('[Import] Column indices:', JSON.stringify(colIdx));
+
+      // Map common column variations
+      const getCol = (row: string[], ...names: string[]): string => {
+        for (const name of names) {
+          const idx = colIdx[name.toLowerCase()];
+          if (idx !== undefined && idx < row.length && row[idx]) {
+            return row[idx].replace(/^"|"$/g, '').trim();
+          }
+        }
+        return '';
+      };
+
+      // Get current pass
+      const passIdx = seasonPasses.findIndex(p => p.id === activeSeasonPassId);
+      if (passIdx === -1) {
+        return { success: false, message: 'Active season pass not found' };
+      }
+
+      const pass = { ...seasonPasses[passIdx] };
+      const newSalesData = { ...pass.salesData };
+      let salesImported = 0;
+
+      // Parse each row
+      for (let i = 1; i < lines.length; i++) {
+        // Handle quoted CSV properly
+        const row: string[] = [];
+        let current = '';
+        let inQuotes = false;
+        for (const ch of lines[i]) {
+          if (ch === '"') {
+            inQuotes = !inQuotes;
+          } else if (ch === ',' && !inQuotes) {
+            row.push(current);
+            current = '';
+          } else {
+            current += ch;
+          }
+        }
+        row.push(current);
+
+        const gameId = getCol(row, 'GameID', 'gameid', 'game_id', 'Game ID');
+        const section = getCol(row, 'Section', 'section');
+        const rowStr = getCol(row, 'Row', 'row');
+        const seats = getCol(row, 'Seats', 'seats');
+        const seatCount = parseInt(getCol(row, 'SeatCount', 'seatcount', 'seat_count', 'Seat Count') || '2', 10);
+        const price = parseFloat(getCol(row, 'SalePrice', 'Price', 'price', 'saleprice', 'sale_price') || '0');
+        const paymentStatus = getCol(row, 'PaymentStatus', 'paymentstatus', 'payment_status', 'Payment Status') || 'Paid';
+        const soldDateStr = getCol(row, 'Sold Date', 'solddate', 'sold_date', 'SoldDate');
+
+        if (!gameId || !section || !rowStr) continue;
+
+        // Create pair ID from section/row
+        const pairId = `${section}_${rowStr}`.replace(/\s+/g, '');
+        
+        // Ensure seatPair exists
+        const existingPair = pass.seatPairs.find(p => 
+          p.section === section && p.row === rowStr
+        );
+        if (!existingPair) {
+          pass.seatPairs.push({
+            id: pairId,
+            section,
+            row: rowStr,
+            seats: seats || '1-2',
+            seasonCost: 0,
+          });
+        }
+
+        // Initialize game sales if needed
+        if (!newSalesData[gameId]) {
+          newSalesData[gameId] = {};
+        }
+
+        // Use existing pairId if found, otherwise the generated one
+        const actualPairId = existingPair?.id || pairId;
+        const saleId = `${gameId}_${actualPairId}`;
+
+        // Parse sold date
+        let soldDate: string | undefined;
+        if (soldDateStr) {
+          try {
+            const d = new Date(soldDateStr);
+            if (!isNaN(d.getTime())) soldDate = d.toISOString();
+          } catch { /* ignore */ }
+        }
+
+        newSalesData[gameId][actualPairId] = {
+          id: saleId,
+          gameId,
+          pairId: actualPairId,
+          section,
+          row: rowStr,
+          seats: seats || '1-2',
+          seatCount: seatCount || 2,
+          price: price || 0,
+          paymentStatus: paymentStatus as 'Paid' | 'Pending',
+          soldDate: soldDate || new Date().toISOString(),
+        };
+        salesImported++;
+      }
+
+      // Update pass with new data
+      pass.salesData = newSalesData;
+      
+      const newPasses = [...seasonPasses];
+      newPasses[passIdx] = pass;
+      
+      await AsyncStorage.setItem(SEASON_PASSES_KEY, JSON.stringify(newPasses));
+      setSeasonPasses(newPasses);
+      setSalesDataVersion(v => v + 1);
+
+      console.log('[Import] ✅ CSV imported', salesImported, 'sales');
+      return { success: true, message: `Imported ${salesImported} sales from CSV` };
+    } catch (e: any) {
+      console.error('[Import] CSV import failed:', e);
+      return { success: false, message: `Import failed: ${e.message || 'Unknown error'}` };
+    }
+  }, [activeSeasonPassId, seasonPasses]);
 
   const emailBackup = useCallback(async (embedLogos = false): Promise<{ success: boolean; isWeb: boolean }> => {
     try {
@@ -4142,6 +4356,8 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     exportAsJSON,
     exportAsExcel,
     exportAsCSV,
+    importFromJSONBackup,
+    importFromCSVBackup,
     emailBackup,
       prepareBackupPackage,
     restorePanthersData,

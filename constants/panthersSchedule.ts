@@ -40,7 +40,15 @@ function getOpponentLogo(opponent: string): string | undefined {
   return NHL_LOGOS[teamName];
 }
 
-export const PANTHERS_20252026_SCHEDULE: Game[] = [
+// Lazy-load the schedule data to avoid Hermes engine crash on macOS Catalyst
+// Large arrays evaluated at module init time can trigger EXC_BAD_ACCESS
+let _cachedSchedule: Game[] | null = null;
+
+function getScheduleData(): Game[] {
+  if (_cachedSchedule) return _cachedSchedule;
+  
+  try {
+    _cachedSchedule = [
   {
     id: 'p1',
     date: 'Sep 29, 2025',
@@ -629,6 +637,33 @@ export const PANTHERS_20252026_SCHEDULE: Game[] = [
     gameNumber: '40',
     dateTimeISO: '2026-04-15T23:00:00Z',
   },
-];
+    ];
+  } catch (e) {
+    console.error('[panthersSchedule] Failed to initialize schedule:', e);
+    _cachedSchedule = [];
+  }
+  
+  return _cachedSchedule;
+}
+
+// Export as a getter proxy so it lazily loads on first access
+export const PANTHERS_20252026_SCHEDULE: Game[] = new Proxy([] as Game[], {
+  get(target, prop) {
+    const data = getScheduleData();
+    if (prop === 'length') return data.length;
+    if (typeof prop === 'string' && !isNaN(Number(prop))) {
+      return data[Number(prop)];
+    }
+    if (prop === Symbol.iterator) {
+      return function* () { yield* data; };
+    }
+    // Handle array methods
+    const value = (data as any)[prop];
+    if (typeof value === 'function') {
+      return value.bind(data);
+    }
+    return value;
+  },
+});
 
 export default PANTHERS_20252026_SCHEDULE;

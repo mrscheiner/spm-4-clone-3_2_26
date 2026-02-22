@@ -15,7 +15,15 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "app.rork.spm-2-repository"
+      "bundleIdentifier": "app.rork.spm-2-repository",
+      "buildNumber": "4",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        }
+      }
     },
     "android": {
       "adaptiveIcon": {

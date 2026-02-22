@@ -1,11 +1,12 @@
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Switch } from "react-native";
+import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Platform } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
-import { FileText, Shield, Mail, Plus, Users, RefreshCw, Table, CheckCircle, AlertCircle, Key, Trash2, Wrench } from "lucide-react-native";
-import FileImportBox from "@/components/FileImportBox";
+import { FileText, Plus, Users, RefreshCw, Table, Trash2, Wrench, Download, Upload } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import * as Haptics from 'expo-haptics';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 
 import { AppColors } from "@/constants/appColors";
 import { STORAGE_PREFIX } from "@/constants/storage";
@@ -27,10 +28,10 @@ export default function SettingsScreen() {
     resyncSchedule,
     isLoadingSchedule,
     lastScheduleError,
-    exportAsExcel,
+    exportAsJSON,
     exportAsCSV,
-    emailBackup,
-    importSalesFromFileData,
+    importFromJSONBackup,
+    importFromCSVBackup,
     lastBackupTime,
     lastBackupStatus,
     backupError,
@@ -40,9 +41,9 @@ export default function SettingsScreen() {
 
   const [isResyncing, setIsResyncing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
-  const [includeLogos, setIncludeLogos] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   const [isRetryingBackup, setIsRetryingBackup] = useState(false);
-  const [showDevTools, setShowDevTools] = useState(__DEV__);
+  const [showDevTools, setShowDevTools] = useState(typeof __DEV__ !== 'undefined' && __DEV__ === true);
   const devTapCount = useRef(0);
   const devTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -99,6 +100,26 @@ export default function SettingsScreen() {
     }
   }, [activeSeasonPass, activeSeasonPassId, deleteSeasonPass, router]);
 
+  // ============ SIMPLIFIED EXPORT HANDLERS ============
+  const handleExportJSON = useCallback(async () => {
+    setIsExporting(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      const success = await exportAsJSON();
+      if (success) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert('Success', 'JSON backup file saved. You can use this to restore all your data later.');
+      } else {
+        Alert.alert('Error', 'Failed to export JSON.');
+      }
+    } catch (error) {
+      console.error('[Settings] Export JSON error:', error);
+      Alert.alert('Error', 'Failed to export JSON.');
+    } finally {
+      setIsExporting(false);
+    }
+  }, [exportAsJSON]);
+
   const handleExportCSV = useCallback(async () => {
     setIsExporting(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -106,7 +127,7 @@ export default function SettingsScreen() {
       const success = await exportAsCSV();
       if (success) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert('Success', 'Sales data copied to clipboard as CSV.');
+        Alert.alert('Success', 'CSV file saved and data copied to clipboard.');
       } else {
         Alert.alert('Error', 'Failed to export CSV.');
       }
@@ -118,40 +139,93 @@ export default function SettingsScreen() {
     }
   }, [exportAsCSV]);
 
-  const handleExportExcel = useCallback(async () => {
-    setIsExporting(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  // ============ SIMPLIFIED IMPORT HANDLERS ============
+  const handleImportJSON = useCallback(async () => {
     try {
-      const success = await exportAsExcel();
-      if (success) {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert('Success', 'Excel file exported successfully.');
-      } else {
-        Alert.alert('Error', 'Failed to export Excel.');
-      }
-    } catch (error) {
-      console.error('[Settings] Export Excel error:', error);
-      Alert.alert('Error', 'Failed to export Excel.');
-    } finally {
-      setIsExporting(false);
-    }
-  }, [exportAsExcel]);
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ['application/json', 'text/plain', '*/*'],
+        copyToCacheDirectory: true,
+      });
 
-  const handleEmailBackup = useCallback(async () => {
-    setIsExporting(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    try {
-      const result = await emailBackup(includeLogos);
+      if (res.canceled || !res.assets || res.assets.length === 0) return;
+
+      setIsImporting(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+      const asset = res.assets[0];
+      let content: string;
+
+      if (Platform.OS === 'web') {
+        const response = await fetch(asset.uri);
+        content = await response.text();
+      } else {
+        content = await FileSystem.readAsStringAsync(asset.uri, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+      }
+
+      const result = await importFromJSONBackup(content);
+      
       if (result.success) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert('Success', result.message);
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Alert.alert('Import Failed', result.message);
       }
-    } catch (error) {
-      console.error('[Settings] Email backup error:', error);
-      Alert.alert('Error', 'Failed to prepare email backup.');
+    } catch (error: any) {
+      console.error('[Settings] Import JSON error:', error);
+      Alert.alert('Error', 'Could not read file: ' + (error.message || 'Unknown error'));
     } finally {
-      setIsExporting(false);
+      setIsImporting(false);
     }
-  }, [emailBackup, includeLogos]);
+  }, [importFromJSONBackup]);
+
+  const handleImportCSV = useCallback(async () => {
+    if (!activeSeasonPassId) {
+      Alert.alert('No Season Pass', 'Please create or select a season pass before importing CSV sales data.');
+      return;
+    }
+
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ['text/csv', 'text/plain', '*/*'],
+        copyToCacheDirectory: true,
+      });
+
+      if (res.canceled || !res.assets || res.assets.length === 0) return;
+
+      setIsImporting(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+      const asset = res.assets[0];
+      let content: string;
+
+      if (Platform.OS === 'web') {
+        const response = await fetch(asset.uri);
+        content = await response.text();
+      } else {
+        content = await FileSystem.readAsStringAsync(asset.uri, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+      }
+
+      const result = await importFromCSVBackup(content);
+      
+      if (result.success) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert('Success', result.message);
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Alert.alert('Import Failed', result.message);
+      }
+    } catch (error: any) {
+      console.error('[Settings] Import CSV error:', error);
+      Alert.alert('Error', 'Could not read file: ' + (error.message || 'Unknown error'));
+    } finally {
+      setIsImporting(false);
+    }
+  }, [activeSeasonPassId, importFromCSVBackup]);
 
   const handleRetryBackup = useCallback(async () => {
     setIsRetryingBackup(true);
@@ -213,75 +287,6 @@ export default function SettingsScreen() {
           </LinearGradient>
 
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>SYNC KEY</Text>
-            <TouchableOpacity
-              style={styles.settingCard}
-              onPress={() => {
-                Alert.alert('Sync Key', 'Enter your sync key to enable cloud sync between devices.', [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'OK' },
-                ]);
-              }}
-            >
-              <View style={[styles.iconContainer, { backgroundColor: '#E3F2FD' }]}>
-                <Key size={24} color="#1976D2" />
-              </View>
-              <View style={styles.settingContent}>
-                <Text style={styles.settingTitle}>Set Sync Key</Text>
-                <Text style={styles.settingDescription}>Enter your sync key to enable cloud sync</Text>
-              </View>
-            </TouchableOpacity>
-          </View>
-
-          {!!lastBackupStatus && (
-            <View
-              style={[
-                styles.backupStatusCard,
-                lastBackupStatus === 'success' ? styles.backupStatusSuccess : styles.backupStatusFailed,
-              ]}
-            >
-              <View style={styles.backupStatusContent}>
-                {lastBackupStatus === 'success' ? (
-                  <CheckCircle size={20} color="#2E7D32" />
-                ) : (
-                  <AlertCircle size={20} color="#C62828" />
-                )}
-                <View style={styles.backupStatusText}>
-                  <Text
-                    style={[
-                      styles.backupStatusTitle,
-                      lastBackupStatus === 'success'
-                        ? styles.backupStatusTitleSuccess
-                        : styles.backupStatusTitleFailed,
-                    ]}
-                  >
-                    {lastBackupStatus === 'success' ? 'Backup saved' : 'Backup failed'}
-                  </Text>
-                  {!!lastBackupTime && lastBackupStatus === 'success' && (
-                    <Text style={styles.backupStatusTime}>{lastBackupTime}</Text>
-                  )}
-                  {!!backupError && lastBackupStatus === 'failed' && (
-                    <Text style={styles.backupStatusError}>{backupError}</Text>
-                  )}
-                </View>
-              </View>
-              {lastBackupStatus === 'failed' && (
-                <TouchableOpacity
-                  style={styles.retryButton}
-                  onPress={handleRetryBackup}
-                  disabled={isRetryingBackup}
-                >
-                  {isRetryingBackup ? (
-                    <ActivityIndicator size="small" color="#C62828" />
-                  ) : (
-                    <Text style={styles.retryButtonText}>Retry</Text>
-                  )}
-                </TouchableOpacity>
-              )}
-            </View>
-          )}
-
-          <View style={styles.section}>
             <Text style={styles.sectionTitle}>SEASON PASSES</Text>
 
             <TouchableOpacity style={styles.settingCard} onPress={handleAddSeasonPass}>
@@ -293,23 +298,6 @@ export default function SettingsScreen() {
                 <Text style={styles.settingDescription}>Create a new season pass for another team</Text>
               </View>
             </TouchableOpacity>
-
-            <View style={styles.settingCard}>
-              <View style={[styles.iconContainer, { backgroundColor: '#FCE4EC' }]}>
-                <Shield size={24} color="#C2185B" />
-              </View>
-              <View style={styles.settingContent}>
-                <Text style={styles.settingTitle}>Embed Logos in Backup (Offline Restore)</Text>
-                <Text style={styles.settingDescription}>
-                  {includeLogos
-                    ? 'ON: embeds team & opponent logos inside backup.'
-                    : 'OFF: saves logo links; logos re-download when online.'}
-                </Text>
-              </View>
-              <View style={{ justifyContent: 'center' }}>
-                <Switch value={includeLogos} onValueChange={setIncludeLogos} />
-              </View>
-            </View>
 
             <View style={styles.settingCard}>
               <View style={[styles.iconContainer, { backgroundColor: '#E3F2FD' }]}>
@@ -361,16 +349,30 @@ export default function SettingsScreen() {
             )}
           </View>
 
+          {/* ============ SIMPLIFIED BACKUP/RESTORE ============ */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>IMPORT DATA</Text>
-            <FileImportBox
-              onImport={importSalesFromFileData}
-              activePassId={activeSeasonPassId}
-            />
-          </View>
+            <Text style={styles.sectionTitle}>BACKUP (EXPORT)</Text>
+            <Text style={styles.sectionSubtitle}>Save your data to restore later</Text>
 
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>EXPORT DATA</Text>
+            <TouchableOpacity
+              style={[styles.settingCard, isExporting && styles.settingCardDisabled]}
+              onPress={handleExportJSON}
+              disabled={isExporting}
+            >
+              <View style={[styles.iconContainer, { backgroundColor: '#E3F2FD' }]}>
+                {isExporting ? (
+                  <ActivityIndicator size="small" color="#1976D2" />
+                ) : (
+                  <Download size={24} color="#1976D2" />
+                )}
+              </View>
+              <View style={styles.settingContent}>
+                <Text style={styles.settingTitle}>Export JSON (Full Backup)</Text>
+                <Text style={styles.settingDescription}>
+                  Saves everything: passes, games, sales, settings
+                </Text>
+              </View>
+            </TouchableOpacity>
 
             <TouchableOpacity
               style={[styles.settingCard, isExporting && styles.settingCardDisabled]}
@@ -381,51 +383,60 @@ export default function SettingsScreen() {
                 {isExporting ? (
                   <ActivityIndicator size="small" color="#4CAF50" />
                 ) : (
-                  <FileText size={24} color="#4CAF50" />
-                )}
-              </View>
-              <View style={styles.settingContent}>
-                <Text style={styles.settingTitle}>Export as Excel</Text>
-                <Text style={styles.settingDescription}>Download sales data as .xlsx workbook</Text>
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.settingCard, isExporting && styles.settingCardDisabled]}
-              onPress={handleExportExcel}
-              disabled={isExporting}
-            >
-              <View style={[styles.iconContainer, { backgroundColor: '#E8F5E9' }]}>
-                {isExporting ? (
-                  <ActivityIndicator size="small" color="#4CAF50" />
-                ) : (
                   <Table size={24} color="#4CAF50" />
                 )}
               </View>
               <View style={styles.settingContent}>
-                <Text style={styles.settingTitle}>Export as CSV</Text>
+                <Text style={styles.settingTitle}>Export CSV (Sales Data)</Text>
                 <Text style={styles.settingDescription}>
-                  Copy sales data as CSV to clipboard
+                  Spreadsheet format for Excel/Sheets
+                </Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>RESTORE (IMPORT)</Text>
+            <Text style={styles.sectionSubtitle}>Load data from a backup file</Text>
+
+            <TouchableOpacity
+              style={[styles.settingCard, isImporting && styles.settingCardDisabled]}
+              onPress={handleImportJSON}
+              disabled={isImporting}
+            >
+              <View style={[styles.iconContainer, { backgroundColor: '#E3F2FD' }]}>
+                {isImporting ? (
+                  <ActivityIndicator size="small" color="#1976D2" />
+                ) : (
+                  <Upload size={24} color="#1976D2" />
+                )}
+              </View>
+              <View style={styles.settingContent}>
+                <Text style={styles.settingTitle}>Import JSON (Full Restore)</Text>
+                <Text style={styles.settingDescription}>
+                  Restores everything from a JSON backup
                 </Text>
               </View>
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.settingCard, isExporting && styles.settingCardDisabled]}
-              onPress={handleEmailBackup}
-              disabled={isExporting}
+              style={[styles.settingCard, (isImporting || !activeSeasonPassId) && styles.settingCardDisabled]}
+              onPress={handleImportCSV}
+              disabled={isImporting || !activeSeasonPassId}
             >
-              <View style={[styles.iconContainer, { backgroundColor: '#FFF3E0' }]}>
-                {isExporting ? (
-                  <ActivityIndicator size="small" color="#FF9800" />
+              <View style={[styles.iconContainer, { backgroundColor: '#E8F5E9' }]}>
+                {isImporting ? (
+                  <ActivityIndicator size="small" color="#4CAF50" />
                 ) : (
-                  <Mail size={24} color="#FF9800" />
+                  <FileText size={24} color="#4CAF50" />
                 )}
               </View>
               <View style={styles.settingContent}>
-                <Text style={styles.settingTitle}>Email Backup</Text>
+                <Text style={styles.settingTitle}>Import CSV (Sales Only)</Text>
                 <Text style={styles.settingDescription}>
-                  Send complete backup with all data and code
+                  {activeSeasonPassId 
+                    ? 'Adds sales to current season pass' 
+                    : 'Create a season pass first'}
                 </Text>
               </View>
             </TouchableOpacity>
@@ -456,7 +467,7 @@ export default function SettingsScreen() {
             <TouchableOpacity
               style={styles.showDevButton}
               onPress={() => {
-                if (__DEV__) {
+                if (typeof __DEV__ !== 'undefined' && __DEV__ === true) {
                   setShowDevTools(true);
                 } else {
                   Alert.alert('Developer Tools', 'Tap the version label 5 times to unlock.');
@@ -540,6 +551,13 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700' as const,
     color: AppColors.textLight,
+    marginBottom: 4,
+    paddingHorizontal: 4,
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    fontWeight: '500' as const,
+    color: AppColors.textSecondary,
     marginBottom: 10,
     paddingHorizontal: 4,
   },
