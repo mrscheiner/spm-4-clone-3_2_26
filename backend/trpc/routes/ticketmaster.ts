@@ -425,10 +425,8 @@ export const ticketmasterRouter = createTRPCRouter({
             }
           }
           
-          // Check if event name suggests it's a home game ("Team vs" pattern)
-          if (eventName.includes(teamFirstWord + " vs")) {
-            return true;
-          }
+          // (removed simplistic "Team vs" rule; venue/city and " at " logic
+          // are sufficient and more reliable.)
           
           // For events with "at" - the team after "at" is the home team
           // If our team appears before "at", it's an away game
@@ -441,6 +439,10 @@ export const ticketmasterRouter = createTRPCRouter({
                 return true;
               }
             }
+          }
+          // debug: if we get here and haven't returned yet, log some context (only in dev)
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[TM_PROXY] filter check skipped for eventName:', eventName);
           }
           
           return false;
