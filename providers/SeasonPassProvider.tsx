@@ -468,17 +468,19 @@ async function fetchScheduleViaBackend(pass: {
   teamAbbreviation?: string;
 }): Promise<ScheduleFetchResult> {
   console.log('[ScheduleFetch] ========== COMBINED FETCH START ==========');
-  // if sportsdata key is present use that first
+  // if sportsdata key is present use that *exclusively* (no fallbacks)
   if (process.env.EXPO_PUBLIC_SPORTSDATA_API_KEY) {
-    console.log('[ScheduleFetch] Trying Sportsdata proxy first...');
+    console.log('[ScheduleFetch] Sportsdata key configured – using Sportsdata only');
     const sdResult = await fetchScheduleViaSportsdata(pass);
     if (!sdResult.error && sdResult.games.length > 0) {
       console.log('[ScheduleFetch] ✅ Sportsdata succeeded with', sdResult.games.length, 'games');
-      return sdResult;
+    } else {
+      console.warn('[ScheduleFetch] Sportsdata returned', sdResult.games.length, 'games, error=', sdResult.error);
     }
-    console.log('[ScheduleFetch] Sportsdata failed or returned 0 games, falling back to ESPN/TM');
+    return sdResult;
   }
 
+  // otherwise fall back to ESPN + Ticketmaster as before
   console.log('[ScheduleFetch] Trying ESPN first (primary source)...');
   
   // Try ESPN first (free, reliable)
