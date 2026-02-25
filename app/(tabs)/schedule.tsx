@@ -259,6 +259,13 @@ export default function ScheduleScreen() {
     return JSON.stringify(activeSeasonPass.salesData);
   }, [activeSeasonPass?.salesData]);
   const [selectedGame, setSelectedGame] = useState<ComputedGame | null>(null);
+
+  // debug: print games whenever active pass changes
+  useEffect(() => {
+    if (__DEV__ && activeSeasonPass && activeSeasonPass.games) {
+      console.log('[DEBUG] activeSeasonPass games:', activeSeasonPass.games.map(g=>({id:g.id,type:g.type,dateTimeISO:g.dateTimeISO}))); 
+    }
+  }, [activeSeasonPass?.games]);
   const [editingPrices, setEditingPrices] = useState<Record<string, string>>({});
   const [editingStatuses, setEditingStatuses] = useState<Record<string, 'Pending' | 'Paid'>>({});
 
@@ -274,39 +281,28 @@ export default function ScheduleScreen() {
     return (activeSeasonPass.games || []).map(game => {
       const gameDate = game.dateTimeISO ? new Date(game.dateTimeISO).getTime() : new Date(game.date).getTime();
       const isPast = gameDate < now;
+      
       const pairsForGame = activeSeasonPass.salesData[game.id] || {};
       const salesCount = Object.keys(pairsForGame).length;
+      
       const ticketsSold = Object.values(pairsForGame).reduce((acc, sale) => {
         if (!sale) return acc;
-        const sc = typeof sale.seatCount === 'number' && sale.seatCount > 0
-          ? sale.seatCount
+        const sc = typeof sale.seatCount === 'number' && sale.seatCount > 0 
+          ? sale.seatCount 
           : parseSeatsCount(sale?.seats) || 2;
         return acc + sc;
       }, 0);
-      const ticketsAvailable = ticketsPerGame - ticketsSold;
-      // ...existing code...
+      const ticketsAvailable = Math.max(0, ticketsPerGame - ticketsSold);
+      
+      if (salesCount > 0) {
+        console.log('[Schedule] Game', game.gameNumber, game.opponent, '- sales:', salesCount, 'sold:', ticketsSold, 'available:', ticketsAvailable);
+      }
+      
       const allPaid = seatPairIds.every(pairId => {
         const sale = pairsForGame[pairId];
         return sale && (sale.paymentStatus === 'Paid' || sale.paymentStatus.toLowerCase() === 'paid');
       });
-
-      // derive display fields if backend didn't supply them
-      let month = game.month;
-      let day = game.day;
-      let time = game.time;
-      if ((!month || !day || !time) && game.dateTimeISO) {
-        const dt = new Date(game.dateTimeISO);
-        if (!month) {
-          month = dt.toLocaleString('default', { month: 'short' });
-        }
-        if (!day) {
-          day = String(dt.getDate());
-        }
-        if (!time) {
-          time = dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-        }
-      }
-
+      
       return {
         ...game,
         isPast,
@@ -314,9 +310,6 @@ export default function ScheduleScreen() {
         ticketsSold,
         ticketsAvailable,
         allPaid,
-        month: month || '',
-        day: day || '',
-        time: time || '',
       };
     });
   }, [activeSeasonPass, salesDataHash]);
@@ -510,9 +503,9 @@ export default function ScheduleScreen() {
               </Text>
             </View>
           ) : (
-            filteredGames.map((game, idx) => (
+            filteredGames.map((game) => (
               <TouchableOpacity 
-                key={game.id || `${game.date || game.dateTimeISO || ''}-${idx}`}
+                key={game.id} 
                 style={[
                   styles.gameCard,
                   game.isPast && styles.gameCardPast

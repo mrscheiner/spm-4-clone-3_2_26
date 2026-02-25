@@ -371,6 +371,10 @@ async function mergePreseasonFromESPN(arr: Game[], pass: {
   teamName: string;
   teamAbbreviation?: string;
 }) {
+  console.log('[ScheduleFetch] mergePreseasonFromESPN called for', pass.leagueId, pass.teamId);
+  if (__DEV__) {
+    try { Alert.alert('Debug', `mergePreseasonFromESPN ${pass.leagueId}/${pass.teamId}`); } catch {}
+  }
   try {
     const espnResult = await fetchScheduleViaESPN(pass);
     if (espnResult && espnResult.games && espnResult.games.length > 0) {
@@ -378,19 +382,33 @@ async function mergePreseasonFromESPN(arr: Game[], pass: {
       const preseason = espnResult.games.filter(g => g.type === 'Preseason' && (g as any).isHome !== false);
       if (preseason.length) {
         console.log('[ScheduleFetch] Merging', preseason.length, 'preseason games from ESPN');
-        const ids = new Set(arr.map(g => g.id));
+        // helper to compute a dedupe key (opponent + date/time)
+        // use dateTimeISO as the unique key since duplicates always share the same timestamp
+        const keyFor = (g: Game) => `${g.dateTimeISO || g.date}`;
+        const existingKeys = new Set(arr.map(keyFor));
+
         // count existing ps entries so we can continue numbering
         const prefix = `ps_${pass.leagueId}_${pass.teamId}_`;
         let existingCount = arr.filter(g => typeof g.id === 'string' && g.id.startsWith(prefix)).length;
         let psCount = existingCount;
+
         // sort by date to keep chronological order when inserting
         preseason.sort((a,b)=> new Date(a.dateTimeISO).getTime() - new Date(b.dateTimeISO).getTime());
         for (const g of preseason) {
+          const k = keyFor(g);
+          // remove any existing game at the same datetime (e.g., TM result)
+          const idx = arr.findIndex(e => keyFor(e) === k);
+          if (idx !== -1) {
+            console.log('[ScheduleFetch] replacing existing game at', k, 'orig arr length', arr.length);
+            if (__DEV__) {
+              try { Alert.alert('Debug', `replacing duplicate at minute ${k}`); } catch {}
+            }
+            arr.splice(idx, 1);
+          }
+
           // stable id based on original ESPN id
-          const stableId = `${prefix}${g.id}`;
-          if (ids.has(stableId)) continue;
           psCount += 1;
-          g.id = stableId;
+          g.id = `${prefix}${g.id}`;
           g.gameNumber = `PS ${psCount}`;
           arr.unshift(g);
         }
@@ -1475,6 +1493,14 @@ async function safeSeedPanthersIfEmpty(): Promise<SeasonPass | null> {
 
 export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
   const [seasonPasses, setSeasonPasses] = useState<SeasonPass[]>([]);
+
+  // debug: log bundle/version information on init
+  useEffect(() => {
+    console.log('[SeasonPass] PROVIDER MOUNT - APP_VERSION', APP_VERSION);
+    AsyncStorage.getItem(BUNDLE_VERSION_KEY)
+      .then(v => console.log('[SeasonPass] stored bundle version:', v))
+      .catch(e => console.warn('[SeasonPass] error reading bundle version', e));
+  }, []);
   const [activeSeasonPassId, setActiveSeasonPassId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
@@ -1868,14 +1894,23 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
   // additional migration: dedupe any duplicate preseason games (old bugs produced duplicates)
   const dedupePreseason = (games: Game[], pass: SeasonPass): Game[] => {
     const prefix = `ps_${pass.leagueId}_${pass.teamId}_`;
-    const seen = new Set<string>();
+    const seenIds = new Set<string>();
+    const seenKeys = new Set<string>();
+    const keyFor = (g: Game) => `${g.dateTimeISO || g.date}`;
     return games.filter(g => {
+      // remove exact id duplicates
       if (typeof g.id === 'string' && g.id.startsWith(prefix)) {
-        if (seen.has(g.id)) {
+        if (seenIds.has(g.id)) {
           return false;
         }
-        seen.add(g.id);
+        seenIds.add(g.id);
       }
+      // also drop duplicates if another game has same datetime
+      const k = keyFor(g);
+      if (seenKeys.has(k)) {
+        return false;
+      }
+      seenKeys.add(k);
       return true;
     });
   };
@@ -2222,6 +2257,13 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
         games = result.games;
         // Try to populate opponent logos immediately for fetched schedules
         games = fillOpponentLogosForLeague(games, league.id);
+        // merge any home‑only preseason from ESPN (replaces duplicates if present)
+        await mergePreseasonFromESPN(games, {
+          leagueId: league.id,
+          teamId: team.id,
+          teamName: team.name,
+          teamAbbreviation: team.abbreviation,
+        });
         
         if (result.error && games.length === 0) {
           if (result.error === 'NETWORK') {
@@ -2534,6 +2576,10 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
       }
 
       console.log('[SeasonPass] fetchScheduleForPass - Fetched', result.games.length, 'HOME games, error:', result.error);
+      // ensure preseason games merged/replaced
+      let gamesWithLogos = fillOpponentLogosForLeague(result.games, pass.leagueId);
+      await mergePreseasonFromESPN(gamesWithLogos, pass);
+      result.games = gamesWithLogos;
       
       let errorMsg: string | undefined;
       if (result.error === 'API_KEY_MISSING') {
@@ -2679,7 +2725,7 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
           };
 
           let gamesWithLogos = fillOpponentLogos(result.games, pass.leagueId);
-          // ensure we merge any home‑only preseason games from ESPN source
+          // always attempt ESPN merge; the helper will replace duplicates by datetime
           await mergePreseasonFromESPN(gamesWithLogos, pass);
 
           const updatedPasses = seasonPasses.map(sp => {
