@@ -283,6 +283,28 @@ async function fetchScheduleViaESPN(pass: {
   }
 }
 
+async function fetchScheduleViaSportsdata(pass: {
+  leagueId: string;
+  teamId: string;
+  teamName: string;
+  teamAbbreviation?: string;
+}): Promise<ScheduleFetchResult> {
+  // ask backend proxy
+  try {
+    const result = await trpcClient.sportsdata.getSchedule.query({
+      leagueId: pass.leagueId,
+      teamId: pass.teamId,
+    });
+    if (result && Array.isArray(result.events)) {
+      console.log('[ScheduleFetch] ✅ Sportsdata proxy returned', result.events.length, 'games');
+      return { games: result.events, error: null };
+    }
+  } catch (e: any) {
+    console.warn('[ScheduleFetch] sportsdata proxy error', e?.message || e);
+  }
+  return { games: [], error: 'NETWORK' };
+}
+
 async function fetchScheduleViaTicketmaster(pass: {
   leagueId: string;
   teamId: string;
@@ -427,6 +449,17 @@ async function fetchScheduleViaBackend(pass: {
   teamAbbreviation?: string;
 }): Promise<ScheduleFetchResult> {
   console.log('[ScheduleFetch] ========== COMBINED FETCH START ==========');
+  // if sportsdata key is present use that first
+  if (process.env.EXPO_PUBLIC_SPORTSDATA_API_KEY) {
+    console.log('[ScheduleFetch] Trying Sportsdata proxy first...');
+    const sdResult = await fetchScheduleViaSportsdata(pass);
+    if (!sdResult.error && sdResult.games.length > 0) {
+      console.log('[ScheduleFetch] ✅ Sportsdata succeeded with', sdResult.games.length, 'games');
+      return sdResult;
+    }
+    console.log('[ScheduleFetch] Sportsdata failed or returned 0 games, falling back to ESPN/TM');
+  }
+
   console.log('[ScheduleFetch] Trying ESPN first (primary source)...');
   
   // Try ESPN first (free, reliable)
