@@ -7,6 +7,7 @@ import { PANTHERS_20252026_SCHEDULE } from '@/constants/panthersSchedule';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { AppColors } from '@/constants/appColors';
+import { APP_VERSION } from '@/constants/appVersion';
 
 import * as Clipboard from 'expo-clipboard';
 import LZString from 'lz-string';
