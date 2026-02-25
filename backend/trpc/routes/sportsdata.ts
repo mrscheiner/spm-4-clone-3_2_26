@@ -1,36 +1,107 @@
-import { Hono } from 'hono';
+import * as z from "zod";
+import { createTRPCRouter, publicProcedure } from "../create-context";
 
-const sportsdataRouter = new Hono();
-
-// Supported leagues and their Sportsdata.io endpoints
-const leagueEndpoints: Record<string, string> = {
-  nba: 'https://api.sportsdata.io/v3/nba/scores/json/GamesByTeam',
-  nhl: 'https://api.sportsdata.io/v3/nhl/scores/json/GamesByTeam',
-  nfl: 'https://api.sportsdata.io/v3/nfl/scores/json/GamesByTeam',
-  mlb: 'https://api.sportsdata.io/v3/mlb/scores/json/GamesByTeam',
-  mls: 'https://api.sportsdata.io/v3/soccer/scores/json/GamesByTeam',
+// map our league ids to sportsdata API path segment
+const SPORTSDATA_PATH: Record<string, string> = {
+  nba: "nba",
+  nhl: "nhl",
+  nfl: "nfl",
+  mlb: "mlb",
+  mls: "mls",
 };
 
-sportsdataRouter.get('/schedule', async (c) => {
-  const { leagueId, teamId, season } = c.req.query();
-  const apiKey = c.env.SPORTSDATA_API_KEY;
-  const endpoint = leagueEndpoints[leagueId];
-  if (!endpoint || !apiKey || !teamId || !season) {
-    return c.json({ error: 'Missing leagueId, teamId, season, or API key' }, 400);
+// season computation reused from espn.ts? we can import or duplicate minimal logic
+function getSeasonForLeague(leagueId: string): number {
+  // very simple: use current year or year+1 for two-year seasons
+  const now = new Date();
+  const year = now.getFullYear();
+  switch (leagueId.toLowerCase()) {
+    case "nba":
+    case "nhl":
+      // if current month >= 6, season is next calendar year
+      return now.getMonth() >= 6 ? year + 1 : year;
+    case "nfl":
+      // nfl uses start year
+      return year;
+    default:
+      return year;
   }
+}
 
-  // Use the correct endpoint format for schedule
-  const url = `${endpoint}/${season}`;
-  const resp = await fetch(url, {
-    headers: { 'Ocp-Apim-Subscription-Key': apiKey },
-  });
-  if (!resp.ok) {
-    return c.json({ error: 'Failed to fetch schedule' }, 500);
-  }
-  const games = await resp.json();
-  // Filter for home games
-  const homeGames = games.filter((game: any) => game.HomeTeamID == teamId);
-  return c.json({ homeGames });
+export const sportsdataRouter = createTRPCRouter({
+  // returns league-wide games filtered to the given team
+  getSchedule: publicProcedure
+    .input(
+      z.object({
+        leagueId: z.string(),
+        teamId: z.string(), // abbreviation, e.g. mil, bos
+      })
+    )
+    .query(async ({ input }) => {
+      const key = typeof process !== "undefined" ? process.env.SPORTSDATA_API_KEY : undefined;
+      if (!key) {
+        console.log("[SD_PROXY] missing SPORTS_DATA_API_KEY");
+        return { events: [], error: "API_KEY_MISSING" };
+      }
+
+      const leagueKey = input.leagueId.toLowerCase();
+      const path = SPORTSDATA_PATH[leagueKey];
+      if (!path) {
+        console.log("[SD_PROXY] unsupported league", leagueKey);
+        return { events: [], error: "UNSUPPORTED_LEAGUE" };
+      }
+
+      const season = getSeasonForLeague(leagueKey);
+      const url = `https://api.sportsdata.io/v3/${path}/scores/json/Games/${season}?key=${key}`;
+      console.log("[SD_PROXY] Fetching", url);
+      let res: Response;
+      try {
+        res = await fetch(url);
+      } catch (e: any) {
+        console.error("[SD_PROXY] fetch failed", e);
+        return { events: [], error: "NETWORK" };
+      }
+      if (!res.ok) {
+        console.error("[SD_PROXY] HTTP", res.status);
+        return { events: [], error: `HTTP_${res.status}` };
+      }
+
+      try {
+        const data: any[] = await res.json();
+        const abbrev = input.teamId.toUpperCase();
+        const games = data
+          .filter(g => g.HomeTeam === abbrev || g.AwayTeam === abbrev)
+          .map((g, idx) => {
+            const eventDate = new Date(g.DateTime || g.Day);
+            const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+            const opponent = g.HomeTeam === abbrev ? g.AwayTeam : g.HomeTeam;
+            const isHome = g.HomeTeam === abbrev;
+            let type: "Preseason" | "Regular" | "Playoff" = "Regular";
+            if (g.SeasonType === 0) type = "Preseason";
+            else if (g.SeasonType === 2) type = "Playoff";
+
+            return {
+              id: `sd_${leagueKey}_${abbrev}_${g.GameID}`,
+              date: `${monthNames[eventDate.getMonth()]} ${eventDate.getDate()}`,
+              month: monthNames[eventDate.getMonth()],
+              day: String(eventDate.getDate()),
+              opponent,
+              opponentLogo: undefined,
+              venueName: g.Stadium || undefined,
+              time: eventDate.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }),
+              ticketStatus: "Available",
+              isPaid: false,
+              gameNumber: idx + 1,
+              type,
+              dateTimeISO: eventDate.toISOString(),
+              isHome,
+            };
+          });
+        console.log("[SD_PROXY] mapped", games.length, "games");
+        return { events: games, error: null };
+      } catch (e: any) {
+        console.error("[SD_PROXY] parse error", e);
+        return { events: [], error: "PARSE_ERROR" };
+      }
+    }),
 });
-
-export default sportsdataRouter;
