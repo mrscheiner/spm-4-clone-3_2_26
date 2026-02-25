@@ -493,7 +493,7 @@ export default function ScheduleScreen() {
           style={styles.filterContainer}
           contentContainerStyle={styles.filterContent}
         >
-          {['All Games', 'Preseason', 'Regular', 'Playoff'].map(filter => (
+          {['All Games', 'Regular', 'Playoff'].map(filter => (
             <TouchableOpacity
               key={filter}
               style={[
