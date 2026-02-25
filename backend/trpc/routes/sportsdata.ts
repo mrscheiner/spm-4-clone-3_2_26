@@ -44,7 +44,27 @@ export const sportsdataRouter = createTRPCRouter({
         return { events: [], error: "API_KEY_MISSING" };
       }
 
-      const leagueKey = input.leagueId.toLowerCase();
+      // parse input and support GET-query patch below
+      let patchedInput: any = input;
+      if (!input || typeof input !== "object") {
+        try {
+          if (typeof globalThis !== "undefined" && (globalThis as any).request) {
+            const url = new URL((globalThis as any).request.url);
+            const inp = url.searchParams.get("input");
+            if (inp) {
+              patchedInput = JSON.parse(inp);
+            }
+          }
+        } catch (e) {
+          console.log("[SD_PROXY] PATCH input parse error", e);
+        }
+      }
+      if (!patchedInput || typeof patchedInput !== "object" || !patchedInput.leagueId || !patchedInput.teamId) {
+        console.log("[SD_PROXY] INVALID_INPUT", patchedInput);
+        return { events: [], error: "INVALID_INPUT" };
+      }
+
+      const leagueKey = patchedInput.leagueId.toLowerCase();
       const path = SPORTSDATA_PATH[leagueKey];
       if (!path) {
         console.log("[SD_PROXY] unsupported league", leagueKey);
@@ -68,7 +88,26 @@ export const sportsdataRouter = createTRPCRouter({
 
       try {
         const data: any[] = await res.json();
-        const abbrev = input.teamId.toUpperCase();
+        // handle manual GET requests where tRPC input may be undefined
+        let patchedInput: any = input;
+        if (!input || typeof input !== "object") {
+          try {
+            if (typeof globalThis !== "undefined" && (globalThis as any).request) {
+              const url = new URL((globalThis as any).request.url);
+              const inp = url.searchParams.get("input");
+              if (inp) {
+                patchedInput = JSON.parse(inp);
+              }
+            }
+          } catch (e) {
+            console.log("[SD_PROXY] PATCH input parse error", e);
+          }
+        }
+        if (!patchedInput || typeof patchedInput !== "object" || !patchedInput.leagueId || !patchedInput.teamId) {
+          console.log("[SD_PROXY] INVALID_INPUT", patchedInput);
+          return { events: [], error: "INVALID_INPUT" };
+        }
+        const abbrev = patchedInput.teamId.toUpperCase();
         // only keep home games; away games are irrelevant for season passes
         const games = data
           .filter(g => g.HomeTeam === abbrev)
