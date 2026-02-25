@@ -269,6 +269,23 @@ export default function ScheduleScreen() {
   const [editingPrices, setEditingPrices] = useState<Record<string, string>>({});
   const [editingStatuses, setEditingStatuses] = useState<Record<string, 'Pending' | 'Paid'>>({});
 
+  const duplicateGames = useMemo(() => {
+    const dups: Game[] = [];
+    const seen = new Set<string>();
+    (activeSeasonPass?.games || []).forEach((g: any) => {
+      const k = g.dateTimeISO || g.date;
+      if (seen.has(k)) {
+        dups.push(g);
+      } else {
+        seen.add(k);
+      }
+    });
+    if (__DEV__ && dups.length) {
+      console.log('[DEBUG] duplicate games detected in active pass:', dups.map(g=>({id:g.id,dateTimeISO:g.dateTimeISO,type:g.type})));
+    }
+    return dups;
+  }, [activeSeasonPass?.games]);
+
   const computedGames = useMemo((): ComputedGame[] => {
     if (!activeSeasonPass) return [];
     
@@ -492,6 +509,11 @@ export default function ScheduleScreen() {
           ))}
         </ScrollView>
 
+        {duplicateGames.length > 0 && (
+          <View style={styles.dupWarning}>
+            <Text style={styles.dupWarningText}>⚠ Duplicate games detected – see console for details</Text>
+          </View>
+        )}
         <View style={styles.gamesList}>
           {filteredGames.length === 0 ? (
             <View style={styles.emptyCard}>
@@ -744,6 +766,18 @@ const styles = StyleSheet.create({
   emptySubtext: {
     fontSize: 14,
     color: AppColors.textSecondary,
+    textAlign: 'center',
+  },
+  dupWarning: {
+    backgroundColor: '#ffdddd',
+    padding: 8,
+    borderRadius: 8,
+    margin: 10,
+  },
+  dupWarningText: {
+    color: '#990000',
+    fontWeight: '700' as const,
+    fontSize: 12,
     textAlign: 'center',
   },
   gameCard: {
