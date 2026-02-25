@@ -400,13 +400,7 @@ export const espnRouter = createTRPCRouter({
         teamName: z.string(),
         teamAbbreviation: z.string().optional(),
       }).optional()
-    .query(async ({ input }) => {
-
-      // Patch: Accept input from GET query string if undefined, bypass tRPC input validation
-      let patchedInput = input;
-      if (!input || typeof input !== 'object') {
-        try {
-          if (typeof globalThis !== 'undefined' && globalThis.request) {
+      )
             const url = new URL(globalThis.request.url);
             const inputParam = url.searchParams.get('input');
             if (inputParam) {
