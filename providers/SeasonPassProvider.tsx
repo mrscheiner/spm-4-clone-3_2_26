@@ -17,30 +17,6 @@ import { parseSeatsCount } from '@/lib/seats';
 
 const BACKUP_VERSION = '1.0';
 
-/**
- * Safe object iteration helper that avoids Hermes engine crashes on macOS Catalyst.
- * The Hermes VM can crash with EXC_BAD_ACCESS when Object.entries/Object.getOwnPropertyDescriptor
- * is called on certain deeply nested objects during startup. This helper uses Object.keys
- * with manual value lookup which is more stable.
- */
-function safeObjectEntries<T>(obj: Record<string, T> | null | undefined): Array<[string, T]> {
-  if (!obj || typeof obj !== 'object') return [];
-  try {
-    const keys = Object.keys(obj);
-    const result: Array<[string, T]> = [];
-    for (const key of keys) {
-      const val = obj[key];
-      if (val !== undefined) {
-        result.push([key, val]);
-      }
-    }
-    return result;
-  } catch (e) {
-    console.warn('[safeObjectEntries] Error iterating object:', e);
-    return [];
-  }
-}
-
 async function withMasterTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   
@@ -50,78 +26,247 @@ async function withMasterTimeout<T>(promise: Promise<T>, ms: number, fallback: T
       resolve(fallback);
     }, ms);
   });
+}
 
+// helpers for direct ESPN site API fetching (avoid tRPC client and return only home games)
+const ESPN_LEAGUE_CONFIG: Record<string, { sport: string; league: string }> = {
+  nba: { sport: "basketball", league: "nba" },
+  nhl: { sport: "hockey", league: "nhl" },
+  nfl: { sport: "football", league: "nfl" },
+  mlb: { sport: "baseball", league: "mlb" },
+  mls: { sport: "soccer", league: "usa.1" },
+  wnba: { sport: "basketball", league: "wnba" },
+  epl: { sport: "soccer", league: "eng.1" },
+  ipl: { sport: "cricket", league: "ipl" },
+};
+
+const ESPN_SITE_BASE = "https://site.api.espn.com/apis/site/v2";
+
+function getSeasonYears(leagueId: string): { season: number; seasonType?: number; altSeason?: number; additionalSeasons?: number[] } {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+
+  switch (leagueId.toLowerCase()) {
+    case 'nhl':
+    case 'nba':
+      if (month >= 6) {
+        return { season: year + 1, altSeason: year, additionalSeasons: [year - 1] };
+      }
+      return { season: year, altSeason: year + 1, additionalSeasons: [year - 1] };
+
+    case 'nfl':
+      if (month <= 1) {
+        return { season: year - 1, altSeason: year, additionalSeasons: [year - 2] };
+      }
+      if (month >= 2 && month <= 7) {
+        return { season: year, altSeason: year - 1, additionalSeasons: [year - 2] };
+      }
+      return { season: year, altSeason: year - 1, additionalSeasons: [year - 2] };
+
+    case 'mlb':
+      if (month <= 1) {
+        return { season: year, altSeason: year - 1, additionalSeasons: [year + 1] };
+      }
+      if (month >= 11) {
+        return { season: year + 1, altSeason: year, additionalSeasons: [year - 1] };
+      }
+      return { season: year, altSeason: year - 1, additionalSeasons: [year + 1] };
+
+    case 'mls':
+      if (month <= 1) {
+        return { season: year, altSeason: year - 1, additionalSeasons: [year + 1] };
+      }
+      return { season: year, altSeason: year - 1, additionalSeasons: [year + 1] };
+
+    default:
+      return { season: year, altSeason: year - 1 };
+  }
+}
+
+async function fetchWithTimeout(url: string, ms = 15000): Promise<Response | null> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ms);
   try {
-    const result = await Promise.race([promise, timeoutPromise]);
-    return result;
+    const resp = await fetch(url, { signal: controller.signal });
+    return resp;
+  } catch (e) {
+    return null;
   } finally {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
+    clearTimeout(timeoutId);
+  }
+}
+
+async function fetchESPNSiteSchedule(pass: {
+  leagueId: string;
+  teamId: string;
+  teamName: string;
+  teamAbbreviation?: string;
+}): Promise<Game[]> {
+  const leagueKey = pass.leagueId.toLowerCase();
+  const cfg = ESPN_LEAGUE_CONFIG[leagueKey];
+  if (!cfg) return [];
+
+  // fetch teams list and resolve espnTeamId
+  const teamsUrl = `${ESPN_SITE_BASE}/sports/${cfg.sport}/${cfg.league}/teams`;
+  const teamsRes = await fetchWithTimeout(teamsUrl, 12000);
+  if (!teamsRes || !teamsRes.ok) return [];
+  let teams: any[] = [];
+  try {
+    const data: any = await teamsRes.json();
+    if (data?.sports?.[0]?.leagues?.[0]?.teams) {
+      teams = data.sports[0].leagues[0].teams.map((t: any) => t.team).filter(Boolean);
+    } else if (data?.teams) {
+      teams = data.teams.map((t: any) => t.team).filter(Boolean);
+    }
+  } catch {
+    return [];
+  }
+
+  const norm = (s?: string) => (s ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  const wantedAbbr = norm(pass.teamAbbreviation);
+  const wantedName = norm(pass.teamName);
+
+  let match =
+    teams.find(t => norm(t.abbreviation) === wantedAbbr) ||
+    teams.find(t => norm(t.displayName) === wantedName) ||
+    teams.find(t => norm(t.shortDisplayName) === wantedName) ||
+    teams.find(t => norm(t.name) === wantedName) ||
+    null;
+  if (!match) return [];
+  const espnTeamId = String(match.id);
+
+  const seasonInfo = getSeasonYears(leagueKey);
+  const seasonsToTry: (number | 'default')[] = [seasonInfo.season];
+  if (seasonInfo.altSeason) seasonsToTry.push(seasonInfo.altSeason);
+  if (seasonInfo.additionalSeasons) seasonsToTry.push(...seasonInfo.additionalSeasons);
+  seasonsToTry.push('default');
+
+  let rawEvents: any[] = [];
+  const seenEventIds = new Set<string>();
+
+  for (const seasonYear of seasonsToTry) {
+    const urlsToTry: string[] = [];
+    if (seasonYear === 'default') {
+      urlsToTry.push(`${ESPN_SITE_BASE}/sports/${cfg.sport}/${cfg.league}/teams/${espnTeamId}/schedule`);
+      urlsToTry.push(`${ESPN_SITE_BASE}/sports/${cfg.sport}/${cfg.league}/teams/${espnTeamId}/schedule?seasontype=1`);
+    } else {
+      urlsToTry.push(
+        `${ESPN_SITE_BASE}/sports/${cfg.sport}/${cfg.league}/teams/${espnTeamId}/schedule?season=${seasonYear}`
+      );
+      urlsToTry.push(
+        `${ESPN_SITE_BASE}/sports/${cfg.sport}/${cfg.league}/teams/${espnTeamId}/schedule?season=${seasonYear}&seasontype=1`
+      );
+    }
+    for (const scheduleUrl of urlsToTry) {
+      const scheduleRes = await fetchWithTimeout(scheduleUrl, 20000);
+      if (!(scheduleRes && scheduleRes.ok)) continue;
+      try {
+        const scheduleData = await scheduleRes.json();
+        const events: any[] = scheduleData?.events || [];
+        for (const ev of events) {
+          const id = String(ev.id || ev.eventId || '');
+          if (id && !seenEventIds.has(id)) {
+            seenEventIds.add(id);
+            rawEvents.push(ev);
+          }
+        }
+      } catch {
+        // ignore parse errors
+      }
     }
   }
+
+  // filter to home games only
+  const homeEvents = rawEvents.filter((ev: any) => {
+    const comp = (ev.competitions && ev.competitions[0]) || {};
+    const competitors = comp.competitors || [];
+    const ourTeam = competitors.find((c: any) =>
+      String(c?.team?.id) === espnTeamId ||
+      norm(c?.team?.abbreviation) === wantedAbbr
+    );
+    return ourTeam?.homeAway === 'home';
+  });
+
+  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const mapped = homeEvents.map((ev: any, idx: number) => {
+    const eventDate = new Date(ev.date);
+    const competitions = ev.competitions || [];
+    const comp = competitions[0] || {};
+    const competitors = comp.competitors || [];
+    const opponent = competitors.find((c: any) =>
+      String(c?.team?.id) !== espnTeamId &&
+      norm(c?.team?.abbreviation) !== wantedAbbr
+    );
+    const opponentName = opponent?.team?.displayName || opponent?.team?.shortDisplayName || opponent?.team?.name || ev.name || 'TBD';
+    let opponentLogo = opponent?.team?.logo || opponent?.team?.logos?.[0]?.href;
+    if (!opponentLogo && opponent?.team?.abbreviation) {
+      opponentLogo = `https://a.espncdn.com/i/teamlogos/nba/500/${opponent.team.abbreviation.toLowerCase()}.png`;
+    }
+    const venue = comp?.venue || ev?.venue;
+    const venueName = venue?.fullName || venue?.name || '';
+
+    let gameType: "Preseason" | "Regular" | "Playoff" = "Regular";
+    const seasonType = ev?.seasonType?.type || ev?.season?.type || comp?.seasonType?.type;
+    const eventName = (ev.name || ev.shortName || '').toLowerCase();
+    if (seasonType === 1 || eventName.includes('preseason') || eventName.includes('exhibition')) {
+      gameType = "Preseason";
+    } else if (seasonType === 3 || eventName.includes('playoff') || eventName.includes('postseason')) {
+      gameType = "Playoff";
+    }
+    return {
+      id: `espn_${leagueKey}_${espnTeamId}_${ev.id || idx}`,
+      date: `${monthNames[eventDate.getMonth()]} ${eventDate.getDate()}`,
+      month: monthNames[eventDate.getMonth()],
+      day: String(eventDate.getDate()),
+      opponent: opponentName,
+      opponentLogo: opponentLogo || undefined,
+      venueName: venueName || undefined,
+      time: eventDate.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }),
+      ticketStatus: "Available",
+      isPaid: false,
+      gameNumber: idx + 1,
+      type: gameType,
+      dateTimeISO: eventDate.toISOString(),
+      isHome: true,
+    } as Game;
+  });
+
+  // sort and renumber
+  mapped.sort((a,b)=> new Date(a.dateTimeISO).getTime() - new Date(b.dateTimeISO).getTime());
+  mapped.forEach((ev, i)=> { ev.gameNumber = i + 1; });
+  return mapped;
 }
 
 type ScheduleFetchResult = { 
   games: Game[]; 
   error?: 'CORS' | 'TIMEOUT' | 'NETWORK' | 'NO_TEAM' | 'NO_SCHEDULE' | 'API_KEY_MISSING' | null;
-  errorMessage?: string;
-  /** debug: URL that was called (if available) */
-  url?: string;
 };
 
-
-// ESPN fallback only; does **not** call the unified backend again so
-// that fetchScheduleViaBackend can use it as a true secondary source.
 async function fetchScheduleViaESPN(pass: {
   leagueId: string;
   teamId: string;
   teamName: string;
   teamAbbreviation?: string;
 }): Promise<ScheduleFetchResult> {
-  const leagueIdRaw = String(pass.leagueId || '').toLowerCase();
-  const apiTeamId = pickApiTeamId(pass);
-
   console.log('[ScheduleFetch] ========== ESPN FETCH START ==========');
   console.log('[ScheduleFetch] Platform.OS:', Platform.OS);
-  console.log('[ScheduleFetch] League:', leagueIdRaw);
+  console.log('[ScheduleFetch] League:', pass.leagueId);
   console.log('[ScheduleFetch] Team name:', pass.teamName);
-  console.log('[ScheduleFetch] Team ID (api):', apiTeamId, 'raw:', pass.teamId);
+  console.log('[ScheduleFetch] Team ID (api):', pass.teamId);
   console.log('[ScheduleFetch] Team abbreviation:', pass.teamAbbreviation);
 
-  // the tRPC/ESP等 code below was here previously but stripped out because the
-  // unified backend already tried to hit the same URL.  Instead, we move the
-  // tRPC call here directly so it truly behaves as a fallback.
-
   try {
-    // call the ESPN tRPC endpoint (remote worker or local) to get the schedule
-    if (!trpcClient?.espn?.getFullSchedule?.query) {
-      console.warn('[ScheduleFetch] ESPN tRPC client missing, cannot fetch');
-      return { games: [], error: 'NETWORK' };
-    }
-
-    const result = await trpcClient.espn.getFullSchedule.query({
-      leagueId: leagueIdRaw,
-      teamId: apiTeamId,
-      teamName: pass.teamName,
-      teamAbbreviation: pass.teamAbbreviation,
-    });
-
-    if (result.error) {
-      console.log('[ScheduleFetch] ESPN tRPC returned error:', result.error);
-      return { games: [], error: 'NO_SCHEDULE' };
-    }
-
-    // result should already be normalized to our Game shape
-    const games: Game[] = (result as any).games || [];
-    console.log('[ScheduleFetch] ✅ ESPN mapped', games.length, 'games');
-    return { games, error: null };
+    const allGames = await fetchESPNSiteSchedule(pass);
+    console.log('[ScheduleFetch] ✅ ESPN site returned', allGames.length, 'games');
+    return { games: allGames, error: null };
   } catch (error: any) {
-    const errorStr = String(error?.message || error || '').toLowerCase();
-    console.log('[ScheduleFetch] ESPN Fetch error:', error?.message || String(error));
-    if (errorStr.includes('cors')) {
+    const errStr = String(error?.message || error || '').toLowerCase();
+    console.log('[ScheduleFetch] ESPN site fetch error:', error?.message || String(error));
+    if (errStr.includes('cors')) {
       return { games: [], error: 'CORS' };
     }
-    if (errorStr.includes('timeout') || errorStr.includes('aborted')) {
+    if (errStr.includes('timeout') || errStr.includes('aborted')) {
       return { games: [], error: 'TIMEOUT' };
     }
     return { games: [], error: 'NETWORK' };
@@ -135,32 +280,25 @@ async function fetchScheduleViaTicketmaster(pass: {
   teamAbbreviation?: string;
 }): Promise<ScheduleFetchResult> {
   const leagueIdRaw = String(pass.leagueId || '').toLowerCase();
-  const apiTeamId = pickApiTeamId(pass);
 
   console.log('[ScheduleFetch] ========== TICKETMASTER FETCH START ==========');
-  console.log('[ScheduleFetch] League:', leagueIdRaw);
-  console.log('[ScheduleFetch] Team (api):', apiTeamId, 'raw:', pass.teamId);
   
-  const baseUrl = process.env.EXPO_PUBLIC_RORK_API_BASE_URL;  if (!baseUrl) {
-    // Log but continue — tRPC client will resolve a base URL if possible.
-    console.warn('[ScheduleFetch] EXPO_PUBLIC_RORK_API_BASE_URL is not configured - continuing with tRPC client fallback');
+  const baseUrl = process.env.EXPO_PUBLIC_RORK_API_BASE_URL;
+  if (!baseUrl) {
+    return { games: [], error: 'NETWORK' };
   }
 
   try {
     console.log('[ScheduleFetch] Calling tRPC ticketmaster.getSchedule...');
     const trpcInput = {
       leagueId: leagueIdRaw,
-      teamId: apiTeamId,
+      teamId: pass.teamId,
       teamName: pass.teamName,
       teamAbbreviation: pass.teamAbbreviation,
     };
     
     const startTime = Date.now();
     let result;
-    if (!trpcClient?.ticketmaster?.getSchedule?.query) {
-      console.log('[ScheduleFetch] Ticketmaster tRPC client missing, skipping fallback.');
-      return { games: [], error: 'NETWORK' };
-    }
     try {
       result = await trpcClient.ticketmaster.getSchedule.query(trpcInput);
     } catch (fetchErr: any) {
@@ -216,82 +354,34 @@ async function fetchScheduleViaTicketmaster(pass: {
   }
 }
 
-// utility to convert localhost base URL to device-accessible host when running in Expo
-function resolveApiBaseUrl(raw: string): string {
-  if (!raw) return raw;
-  if (Platform.OS !== 'web' && raw.includes('127.0.0.1')) {
-    try {
-      const Constants = require('expo-constants').default;
-      const debugEntry = Constants.manifest?.debuggerHost || Constants.manifest2?.debuggerHost;
-      console.log('[ScheduleFetch] manifest debugging host:', debugEntry);
-      const host = debugEntry ? String(debugEntry).split(':')[0] : null;
-      if (host && host !== '127.0.0.1') {
-        const portMatch = raw.match(/:(\d+)/);
-        const port = portMatch ? portMatch[1] : '';
-        const newUrl = `http://${host}${port ? ':' + port : ''}`;
-        console.log('[ScheduleFetch] remapping base URL', raw, '->', newUrl);
-        return newUrl;
+
+async function mergePreseasonFromESPN(arr: Game[], pass: {
+  leagueId: string;
+  teamId: string;
+  teamName: string;
+  teamAbbreviation?: string;
+}) {
+  try {
+    const espnResult = await fetchScheduleViaESPN(pass);
+    if (espnResult && espnResult.games && espnResult.games.length > 0) {
+      const preseason = espnResult.games.filter(g => g.type === 'Preseason' && (g as any).isHome !== false);
+      if (preseason.length) {
+        console.log('[ScheduleFetch] Merging', preseason.length, 'preseason games from ESPN');
+        const ids = new Set(arr.map(g => g.id));
+        let psCount = 0;
+        preseason.sort((a,b)=> new Date(a.dateTimeISO).getTime() - new Date(b.dateTimeISO).getTime());
+        for (const g of preseason) {
+          if (ids.has(g.id)) continue;
+          psCount += 1;
+          g.id = `ps_${pass.leagueId}_${pass.teamId}_${psCount}`;
+          g.gameNumber = `PS ${psCount}`;
+          arr.unshift(g);
+        }
       }
-      console.warn('[ScheduleFetch] could not determine host from Constants, auto-mapping failed');
-    } catch (e) {
-      console.warn('[ScheduleFetch] error resolving api host', e);
     }
-    console.warn('[ScheduleFetch] please set EXPO_PUBLIC_RORK_API_BASE_URL to your machine IP address');
+  } catch (e) {
+    console.warn('[ScheduleFetch] failed to merge preseason from ESPN', e);
   }
-  return raw;
-}
-
-// Helper to pick the value we send to the backend.  If the id contains a
-// league suffix ("det-nba" etc.) strip it; otherwise prefer the explicit
-// abbreviation field which is already normalized ("DET").
-function pickApiTeamId(pass: { teamId: string; teamAbbreviation?: string }): string {
-  if (pass.teamAbbreviation && pass.teamAbbreviation.trim()) {
-    return pass.teamAbbreviation.trim();
-  }
-  const raw = pass.teamId || '';
-  const dash = raw.indexOf('-');
-  if (dash !== -1) {
-    return raw.slice(0, dash);
-  }
-  return raw;
-}
-
-// convert a raw schedule object returned by the SportsDataIO unified
-// endpoint into the `Game` shape the rest of the app expects.  The
-// backend doesn't know our UI semantics so the values are very sparse –
-// we fill in month/day/time, use the away team as the opponent, and
-// default remaining fields to sane defaults.  This mirrors the mapping
-// logic we use in the Worker proxies (see worker.js logs above).
-function mapSportsDataGame(raw: any): Game {
-  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  let eventDate: Date;
-  if (raw.startTimeLocal) {
-    eventDate = new Date(raw.startTimeLocal);
-  } else if (raw.date) {
-    // some leagues return just a date string
-    eventDate = new Date(raw.date);
-  } else {
-    eventDate = new Date();
-  }
-
-  const opponent = raw.awayTeamName || raw.awayTeamId || '';
-  const time = eventDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-
-  return {
-    id: raw.gameId || `${raw.date}_${opponent}`,
-    date: `${monthNames[eventDate.getMonth()]} ${eventDate.getDate()}`,
-    month: monthNames[eventDate.getMonth()],
-    day: String(eventDate.getDate()),
-    opponent,
-    opponentLogo: undefined,
-    venueName: raw.venue || raw.Stadium || undefined,
-    time,
-    ticketStatus: 'Available',
-    isPaid: false,
-    gameNumber: undefined,
-    type: 'Regular',
-    dateTimeISO: eventDate.toISOString(),
-  } as Game;
 }
 
 async function fetchScheduleViaBackend(pass: {
@@ -301,174 +391,29 @@ async function fetchScheduleViaBackend(pass: {
   teamAbbreviation?: string;
 }): Promise<ScheduleFetchResult> {
   console.log('[ScheduleFetch] ========== COMBINED FETCH START ==========');
-  // the season code needs to be visible to both the primary and the remote
-  // attempt below, so declare it outside the try block and populate inside.
-  let seasonCode = '';
-
-  // helper: add preseason games returned by ESPN to the mapped array.  we
-  // intentionally fetch these even if the unified backend succeeded because
-  // sportsdata.io never returns preseason and we want the client to see PS1,
-  // PS2 entries for every team (same style as the hard‑coded Florida Panthers
-  // schedule constant used during development).
-  const mergePreseasonFromESPN = async (arr: Game[]) => {
-    try {
-      const espnResult = await fetchScheduleViaESPN(pass);
-      if (espnResult && espnResult.games && espnResult.games.length > 0) {
-        const preseason = espnResult.games.filter(g => g.type === 'Preseason');
-        if (preseason.length) {
-          console.log('[ScheduleFetch] Merging', preseason.length, 'preseason games from ESPN');
-
-          // dedupe by original id
-          const ids = new Set(arr.map(g => g.id));
-          let psCount = 0;
-          // sort preseason by date so numbering is chronological
-          preseason.sort((a,b)=> new Date(a.dateTimeISO).getTime() - new Date(b.dateTimeISO).getTime());
-          for (const g of preseason) {
-            if (ids.has(g.id)) continue;
-            psCount += 1;
-            // mutate fields to match PS style
-            g.id = `ps_${pass.leagueId}_${pass.teamId}_${psCount}`;
-            g.gameNumber = `PS ${psCount}`;
-            arr.unshift(g); // put before regular games
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('[ScheduleFetch] failed to merge preseason from ESPN', e);
-    }
-  };
-
-  // first try unified backend schedule endpoint
-  // primary attempt: local/dev backend (IP or env var)
-  try {
-    let baseUrl = process.env.EXPO_PUBLIC_RORK_API_BASE_URL || '';
-    baseUrl = resolveApiBaseUrl(baseUrl);
-
-    // dynamically compute the season code instead of hard‑coding '2025'.  The
-    // previous logic returned the same year regardless of the current date, so
-    // when the calendar rolled past June 2025 every team was still pulling the
-    // 2024‑25 season which looked “random” or stale.  We also note that
-    // SportsDataIO does **not** include preseason games, so those will never
-    // appear unless we fall back to ESPN or another source.
-    const determineSeasonCode = (leagueId: string): string => {
-      const now = new Date();
-      const year = now.getFullYear();
-      const month = now.getMonth();
-      switch (leagueId.toLowerCase()) {
-        case 'nba':
-        case 'nhl':
-          // seasons span two calendar years; use the ending year (e.g. Dec‑2025
-          // => 2026 season).  After June we consider the upcoming season.
-          return month >= 6 ? String(year + 1) : String(year);
-        case 'mlb':
-          // single‑year season; during Dec turn over to next year
-          return month >= 11 ? String(year + 1) : String(year);
-        case 'nfl':
-          // NFL uses the start year.  In Jan/Feb we still want the previous
-          // season (playoffs/Super Bowl).  Otherwise current year.
-          return month <= 1 ? String(year - 1) : String(year);
-        case 'mls':
-          // calendar year season
-          return month >= 11 ? String(year + 1) : String(year);
-        default:
-          return String(year);
-      }
-    };
-
-    seasonCode = determineSeasonCode(pass.leagueId);
-    const apiTeamId = pickApiTeamId(pass);
-    const url = `${baseUrl}/api/schedule?league=${encodeURIComponent(pass.leagueId)}&teamId=${encodeURIComponent(apiTeamId)}&season=${encodeURIComponent(seasonCode)}&type=home`;
-    console.log('[ScheduleFetch] Fetching schedule from unified backend endpoint:', url);
-    const resp = await fetch(url);
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data.games && data.games.length > 0) {
-        let mapped: Game[] = data.games.map((g: any) => mapSportsDataGame(g));
-        console.log(`[ScheduleFetch] ✅ Unified backend succeeded with ${mapped.length} games (raw ${data.games.length})`);
-        // always merge preseason games (might add PS1/PS2 entries)
-        await mergePreseasonFromESPN(mapped);
-        // sort: preseason first (retain original date order), then regular/playoff
-        mapped.sort((a,b)=>{
-          if (a.type !== b.type) {
-            if (a.type === 'Preseason') return -1;
-            if (b.type === 'Preseason') return 1;
-          }
-          return new Date(a.dateTimeISO).getTime() - new Date(b.dateTimeISO).getTime();
-        });
-        // after merging, recompute numeric gameNumber for regular games
-        let regIndex = 0;
-        mapped.forEach(g => {
-          if (g.type === 'Regular' || g.type === 'Playoff') {
-            regIndex += 1;
-            g.gameNumber = String(regIndex);
-          }
-        });
-        return { games: mapped, error: null, url };
-      } else {
-        console.log('[ScheduleFetch] Unified backend returned zero games');
-      }
-    } else {
-      const errText = await resp.text();
-      console.log(`[ScheduleFetch] Unified backend failed: HTTP ${resp.status} ${errText}`);
-    }
-  } catch (e) {
-    console.log('[ScheduleFetch] Unified backend fetch error:', typeof e === 'object' && e !== null && 'message' in e ? (e as any).message : String(e));
-  }
-
-  // secondary attempt: fall back to remote production worker if local failed or returned nothing
-  try {
-    const remoteUrl = `https://spm-api.nsp-2-repository.workers.dev/api/schedule?league=${encodeURIComponent(pass.leagueId)}&teamId=${encodeURIComponent(pickApiTeamId(pass))}&season=${encodeURIComponent(seasonCode)}&type=home`;
-    console.log('[ScheduleFetch] Retrying with remote backend:', remoteUrl);
-    const resp2 = await fetch(remoteUrl);
-    if (resp2.ok) {
-      const data2 = await resp2.json();
-      if (data2.games && data2.games.length > 0) {
-        let mapped2: Game[] = data2.games.map((g: any) => mapSportsDataGame(g));
-        console.log('[ScheduleFetch] ✅ Remote backend succeeded with', mapped2.length, 'games (raw', data2.games.length, ')');
-        await mergePreseasonFromESPN(mapped2);
-        mapped2.sort((a,b)=>{
-          if (a.type !== b.type) {
-            if (a.type === 'Preseason') return -1;
-            if (b.type === 'Preseason') return 1;
-          }
-          return new Date(a.dateTimeISO).getTime() - new Date(b.dateTimeISO).getTime();
-        });
-        let regIndex2 = 0;
-        mapped2.forEach(g => {
-          if (g.type === 'Regular' || g.type === 'Playoff') {
-            regIndex2 += 1;
-            g.gameNumber = String(regIndex2);
-          }
-        });
-        return { games: mapped2, error: null, url: remoteUrl };
-      }
-      console.log('[ScheduleFetch] Remote backend returned zero games');
-    } else {
-      const text2 = await resp2.text();
-      console.log('[ScheduleFetch] Remote backend error', resp2.status, text2);
-    }
-  } catch (e2) {
-    console.log('[ScheduleFetch] Remote backend fetch error:', String(e2));
-  }
-
-  // if we get here we need to try fallbacks in order
-  // 1. ESPN tRPC
+  console.log('[ScheduleFetch] Trying ESPN first (primary source)...');
+  
+  // Try ESPN first (free, reliable)
   const espnResult = await fetchScheduleViaESPN(pass);
+  
   if (!espnResult.error && espnResult.games.length > 0) {
     console.log('[ScheduleFetch] ✅ ESPN succeeded with', espnResult.games.length, 'games');
     return espnResult;
   }
-
-  // 2. Ticketmaster tRPC
+  
+  console.log('[ScheduleFetch] ESPN failed or returned 0 games, trying Ticketmaster as fallback...');
+  
+  // Fallback to Ticketmaster
   const tmResult = await fetchScheduleViaTicketmaster(pass);
+  
   if (!tmResult.error && tmResult.games.length > 0) {
-    console.log('[ScheduleFetch] ✅ Ticketmaster succeeded with', tmResult.games.length, 'games');
+    console.log('[ScheduleFetch] ✅ Ticketmaster fallback succeeded with', tmResult.games.length, 'games');
     return tmResult;
   }
-
-  // nothing produced results
-  console.log('[ScheduleFetch] ❌ All sources failed or returned zero games');
-  // return last error if any, otherwise generic
+  
+  console.log('[ScheduleFetch] ❌ Both ESPN and Ticketmaster failed');
+  
+  // Return ESPN error if both failed (ESPN is more likely to have useful error info)
   return espnResult.error ? espnResult : tmResult;
 }
 
@@ -651,28 +596,9 @@ const ACTIVE_PASS_KEY = 'active_season_pass_id';
 const DATA_IMPORTED_KEY = 'data_imported_v1';
 const MASTER_BACKUP_KEY = 'master_backup_v1';
 const ALL_PASSES_BACKUP_KEY = 'all_passes_backup_v1';
-const REWIND_BACKUPS_KEY = 'rewind_backups_v1';
-const MAX_REWIND_BACKUPS = 10;
 
-export interface RewindBackup {
-  id: string;
-  timestamp: string;
-  label: string;
-  salesCount: number;
-  passCount: number;
-  data: BackupData;
-}
 
-// IMPORTANT: Use a lazy getter function to avoid immediate parsing of this large object at module load time.
-// This prevents a Hermes engine crash (EXC_BAD_ACCESS) that occurs when Object.getOwnPropertyDescriptor
-// is called on deeply nested objects during startup - especially on macOS Catalyst builds.
-let _cachedInitialBackupData: { salesData: Record<string, Record<string, any>>; seatPairs: any[] } | null = null;
-
-function getInitialBackupData() {
-  if (_cachedInitialBackupData) return _cachedInitialBackupData;
-  
-  try {
-    _cachedInitialBackupData = {
+const INITIAL_BACKUP_DATA = {
   salesData: {
     "p1": {
       "pair1": {"gameId":"p1","pairId":"pair1","section":"129","row":"26","seats":"24-25","price":33.77,"paymentStatus":"paid","soldDate":"2025-10-15T02:12:54.008Z"},
@@ -848,26 +774,6 @@ function getInitialBackupData() {
     { id: "pair2", section: "308", row: "8", seats: "1-2", seasonCost: 1752.16 },
     { id: "pair3", section: "325", row: "5", seats: "6-7", seasonCost: 1752.16 }
   ]
-    };
-  } catch (e) {
-    console.error('[SeasonPass] Failed to initialize backup data:', e);
-    // Return safe fallback to prevent crash
-    _cachedInitialBackupData = {
-      salesData: {},
-      seatPairs: [
-        { id: "pair1", section: "129", row: "26", seats: "24-25", seasonCost: 3326.06 },
-        { id: "pair2", section: "308", row: "8", seats: "1-2", seasonCost: 1752.16 },
-        { id: "pair3", section: "325", row: "5", seats: "6-7", seasonCost: 1752.16 }
-      ]
-    };
-  }
-  return _cachedInitialBackupData;
-}
-
-// Backward-compatible alias - use getInitialBackupData() for lazy loading
-const INITIAL_BACKUP_DATA = {
-  get salesData() { return getInitialBackupData().salesData; },
-  get seatPairs() { return getInitialBackupData().seatPairs; }
 };
 
 const _INITIAL_BACKUP_DATA_REMOVED = {
@@ -1044,46 +950,26 @@ function normalizePaymentStatus(status: string): 'Pending' | 'Per Seat' | 'Paid'
 function transformSalesData(rawSalesData: Record<string, Record<string, any>>): Record<string, Record<string, SaleRecord>> {
   const transformed: Record<string, Record<string, SaleRecord>> = {};
 
-  // Defensive check: ensure rawSalesData is a valid object
-  if (!rawSalesData || typeof rawSalesData !== 'object') {
-    console.warn('[transformSalesData] Invalid input, returning empty object');
-    return transformed;
-  }
+  Object.entries(rawSalesData).forEach(([gameId, gameSales]) => {
+    transformed[gameId] = {};
+    Object.entries(gameSales).forEach(([pairId, sale]) => {
+      const seatsStr = sale?.seats || '';
+      const seatCount = parseSeatsCount(seatsStr);
 
-  try {
-    // Use Object.keys + manual iteration instead of Object.entries to avoid Hermes crash
-    // on certain macOS builds when iterating deeply nested objects
-    const gameIds = Object.keys(rawSalesData);
-    for (const gameId of gameIds) {
-      const gameSales = rawSalesData[gameId];
-      if (!gameSales || typeof gameSales !== 'object') continue;
-      
-      transformed[gameId] = {};
-      const pairIds = Object.keys(gameSales);
-      for (const pairId of pairIds) {
-        const sale = gameSales[pairId];
-        if (!sale || typeof sale !== 'object') continue;
-        
-        const seatsStr = sale?.seats || '';
-        const seatCount = parseSeatsCount(seatsStr);
-
-        transformed[gameId][pairId] = {
-          id: `${gameId}_${pairId}`,
-          gameId: sale.gameId ?? gameId,
-          pairId: sale.pairId ?? pairId,
-          section: sale.section ?? '',
-          row: sale.row ?? '',
-          seats: seatsStr,
-          seatCount,
-          price: sale.price ?? 0,
-          paymentStatus: normalizePaymentStatus(sale.paymentStatus ?? 'pending'),
-          soldDate: sale.soldDate ?? new Date().toISOString(),
-        };
-      }
-    }
-  } catch (e) {
-    console.error('[transformSalesData] Error transforming sales data:', e);
-  }
+      transformed[gameId][pairId] = {
+        id: `${gameId}_${pairId}`,
+        gameId: sale.gameId,
+        pairId: sale.pairId,
+        section: sale.section,
+        row: sale.row,
+        seats: seatsStr,
+        seatCount,
+        price: sale.price,
+        paymentStatus: normalizePaymentStatus(sale.paymentStatus),
+        soldDate: sale.soldDate,
+      };
+    });
+  });
 
   return transformed;
 }
@@ -1581,9 +1467,6 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
   const [backupError, setBackupError] = useState<string | null>(null);
   const [backupConfirmationMessage, setBackupConfirmationMessage] = useState<string | null>(null);
   
-  // Rewind backup state - stores last 10 snapshots for undo functionality
-  const [rewindBackups, setRewindBackups] = useState<RewindBackup[]>([]);
-  
   // Version counter to force recalculation of stats when sales data changes
   const [salesDataVersion, setSalesDataVersion] = useState(0);
   
@@ -1926,8 +1809,8 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
       (pClone.seatPairs || []).forEach((sp: any) => { seatPairsMap[sp.id] = sp.seats; });
 
       const sales = pClone.salesData || {};
-      safeObjectEntries(sales).forEach(([gameId, gameSales]: any) => {
-        safeObjectEntries(gameSales).forEach(([pairId, sale]: any) => {
+      Object.entries(sales).forEach(([gameId, gameSales]: any) => {
+        Object.entries(gameSales).forEach(([pairId, sale]: any) => {
           if (!sale) return;
           // If seatCount is missing or falsy, try to infer
           if (typeof sale.seatCount !== 'number' || sale.seatCount <= 0) {
@@ -1965,33 +1848,6 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
   setSeasonPasses(passes);
       setActiveSeasonPassId(activeId);
       setNeedsSetup(passes.length === 0);
-      // Migration: convert any games that were saved using the SportsDataIO
-      // backend schema (`gameId`, `awayTeamName`, etc.) into our internal
-      // `Game` shape.  This handles users who previously added a pass when the
-      // unified backend didn't map the response correctly.
-      const migrateSportsDataGames = (list: SeasonPass[]) => {
-        let changed = false;
-        const migrated = list.map(p => {
-          if (!Array.isArray(p.games) || p.games.length === 0) return p;
-          const first = p.games[0] as any;
-          if (first && typeof first === 'object' && ('gameId' in first || 'startTimeLocal' in first)) {
-            changed = true;
-            const newGames: Game[] = p.games.map((g: any) => mapSportsDataGame(g));
-            return { ...p, games: newGames } as SeasonPass;
-          }
-          return p;
-        });
-        return { migrated, changed };
-      };
-
-      // apply migration before any other fixes
-      const migration2 = migrateSportsDataGames(passes);
-      if (migration2.changed) {
-        console.log('[SeasonPass] Migration applied: converted old backend game format');
-        passes = migration2.migrated;
-        await AsyncStorage.setItem(SEASON_PASSES_KEY, JSON.stringify(passes));
-      }
-
       // First ensure games themselves have opponentLogo where possible, then
       // backfill opponentLogo into any existing sale records from the game's opponentLogo
       // This helps ensure logos show up in the Sales UI and in exports for older data
@@ -2030,10 +1886,10 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
             const gamesById: Record<string, Game> = {};
             (p.games || []).forEach(g => { gamesById[g.id] = g; });
 
-            safeObjectEntries(salesClone).forEach(([gameId, gameSales]: any) => {
+            Object.entries(salesClone).forEach(([gameId, gameSales]: any) => {
               const game = gamesById[gameId];
               if (!game) return;
-              safeObjectEntries(gameSales).forEach(([pairId, sale]: any) => {
+              Object.entries(gameSales).forEach(([pairId, sale]: any) => {
                 if (!sale) return;
                 if (!sale.opponentLogo && game.opponentLogo) {
                   sale.opponentLogo = game.opponentLogo;
@@ -2180,133 +2036,7 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     }
   }, []);
 
-  // Helper to count total sales across all passes
-  const countTotalSales = useCallback((passes: SeasonPass[]): number => {
-    let total = 0;
-    for (const pass of passes) {
-      if (pass.salesData) {
-        for (const gameId of Object.keys(pass.salesData)) {
-          const gameSales = pass.salesData[gameId];
-          if (gameSales && typeof gameSales === 'object') {
-            total += Object.keys(gameSales).length;
-          }
-        }
-      }
-    }
-    return total;
-  }, []);
-
-  // Save a rewind backup - keeps last 10 snapshots
-  const saveRewindBackup = useCallback(async (
-    passes: SeasonPass[], 
-    activeId: string | null, 
-    label: string
-  ): Promise<void> => {
-    try {
-      console.log('[RewindBackup] Saving rewind backup:', label);
-      
-      const backupData: BackupData = {
-        version: BACKUP_VERSION,
-        createdAtISO: new Date().toISOString(),
-        activeSeasonPassId: activeId,
-        seasonPasses: passes,
-      };
-      
-      const newBackup: RewindBackup = {
-        id: `rewind_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        timestamp: new Date().toISOString(),
-        label,
-        salesCount: countTotalSales(passes),
-        passCount: passes.length,
-        data: backupData,
-      };
-      
-      // Load existing backups
-      let existingBackups: RewindBackup[] = [];
-      try {
-        const stored = await AsyncStorage.getItem(REWIND_BACKUPS_KEY);
-        if (stored) {
-          existingBackups = JSON.parse(stored);
-        }
-      } catch (e) {
-        console.warn('[RewindBackup] Could not load existing backups:', e);
-      }
-      
-      // Add new backup at the beginning, keep only last MAX_REWIND_BACKUPS
-      const updatedBackups = [newBackup, ...existingBackups].slice(0, MAX_REWIND_BACKUPS);
-      
-      await AsyncStorage.setItem(REWIND_BACKUPS_KEY, JSON.stringify(updatedBackups));
-      setRewindBackups(updatedBackups);
-      
-      console.log('[RewindBackup] ✅ Saved rewind backup, total:', updatedBackups.length);
-    } catch (e) {
-      console.error('[RewindBackup] ❌ Failed to save rewind backup:', e);
-    }
-  }, [countTotalSales]);
-
-  // Load rewind backups on startup
-  const loadRewindBackups = useCallback(async (): Promise<RewindBackup[]> => {
-    try {
-      const stored = await AsyncStorage.getItem(REWIND_BACKUPS_KEY);
-      if (stored) {
-        const backups = JSON.parse(stored) as RewindBackup[];
-        setRewindBackups(backups);
-        console.log('[RewindBackup] Loaded', backups.length, 'rewind backups');
-        return backups;
-      }
-    } catch (e) {
-      console.warn('[RewindBackup] Could not load rewind backups:', e);
-    }
-    return [];
-  }, []);
-
-  // Load rewind backups when app starts
-  useEffect(() => {
-    loadRewindBackups();
-  }, [loadRewindBackups]);
-
-  // Revert to a specific rewind backup
-  const revertToBackup = useCallback(async (backupId: string): Promise<{ success: boolean; error?: string }> => {
-    try {
-      console.log('[RewindBackup] Reverting to backup:', backupId);
-      
-      const backup = rewindBackups.find(b => b.id === backupId);
-      if (!backup) {
-        return { success: false, error: 'Backup not found' };
-      }
-      
-      const { data } = backup;
-      const normalizedPasses = data.seasonPasses.map(normalizeSeasonPass);
-      
-      // Save current state as a rewind point before reverting
-      await saveRewindBackup(seasonPasses, activeSeasonPassId, 'Before revert');
-      
-      // Restore the data
-      setSeasonPasses(normalizedPasses);
-      setActiveSeasonPassId(data.activeSeasonPassId);
-      
-      await AsyncStorage.setItem(SEASON_PASSES_KEY, JSON.stringify(normalizedPasses));
-      if (data.activeSeasonPassId) {
-        await AsyncStorage.setItem(ACTIVE_PASS_KEY, data.activeSeasonPassId);
-      }
-      
-      setLastBackupStatus('success');
-      setBackupConfirmationMessage(`Reverted to ${backup.label} ✅ ${Date.now()}`);
-      setTimeout(() => setBackupConfirmationMessage(null), 3000);
-      
-      console.log('[RewindBackup] ✅ Successfully reverted to backup');
-      return { success: true };
-    } catch (e: any) {
-      console.error('[RewindBackup] ❌ Revert failed:', e);
-      return { success: false, error: e?.message || 'Revert failed' };
-    }
-  }, [rewindBackups, seasonPasses, activeSeasonPassId, saveRewindBackup]);
-
-  const performAutoBackup = useCallback(async (
-    passes: SeasonPass[], 
-    activeId: string | null,
-    changeLabel?: string
-  ): Promise<{ success: boolean; error?: string }> => {
+  const performAutoBackup = useCallback(async (passes: SeasonPass[], activeId: string | null): Promise<{ success: boolean; error?: string }> => {
     console.log('[AutoBackup] Starting automatic backup...');
     const backupStartTime = Date.now();
     
@@ -2335,11 +2065,6 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
       };
       await AsyncStorage.setItem(MASTER_BACKUP_KEY, JSON.stringify(masterBackup));
       console.log('[AutoBackup] Master backup saved');
-      
-      // Save to rewind backups if a change label is provided (indicates user action)
-      if (changeLabel) {
-        await saveRewindBackup(passes, activeId, changeLabel);
-      }
       
       const elapsed = Date.now() - backupStartTime;
       const timeStr = new Date().toLocaleString();
@@ -2373,7 +2098,7 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
       
       return { success: false, error: errorMsg };
     }
-  }, [saveRewindBackup]);
+  }, []);
 
   const retryBackup = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
     console.log('[RetryBackup] Retrying backup...');
@@ -2385,7 +2110,7 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     team: Team,
     seasonLabel: string,
     seatPairs: SeatPair[]
-  ): Promise<SeasonPass | null> => {
+  ): Promise<SeasonPass> => {
     console.log('\n========== CREATE SEASON PASS ==========');
     console.log('[CreatePass] Platform.OS =', Platform.OS);
     console.log('[CreatePass] Input league:', league.id, league.name);
@@ -2396,20 +2121,8 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     console.log('[CreatePass] Seat pairs count:', seatPairs.length);
     console.log('[CreatePass] Using ESPN/Ticketmaster backend for schedule');
 
-    // validate team information
-    if (!team.id || !team.id.toString().trim()) {
-      Alert.alert('Invalid team', 'Team ID is missing or invalid. Please select a valid team from the list.');
-      console.warn('[CreatePass] Aborting creation: missing team ID');
-      return null as any;
-    }
-    if (!team.abbreviation || !team.abbreviation.trim()) {
-      console.warn('[CreatePass] team.abbreviation is empty; schedule fetch may fail');
-      // not fatal but warn
-    }
-
     let games: Game[] = [];
     let scheduleError: string | null = null;
-    let fatalError: string | null = null;
 
     // Check if this is a Florida Panthers (NHL) pass - use bundled schedule
     const isFlaPanthers = String(league.id).toLowerCase() === 'nhl' && String(team.id).toLowerCase() === 'fla';
@@ -2421,37 +2134,16 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     } else {
       try {
         console.log('[CreatePass] Fetching schedule via backend proxy...');
-        let result = await fetchScheduleWithMasterTimeout({
+        const result = await fetchScheduleWithMasterTimeout({
           leagueId: league.id,
           teamId: team.id,
           teamName: team.name,
           teamAbbreviation: team.abbreviation,
         });
-        console.log('[CreatePass] fetchScheduleWithMasterTimeout returned', {
-          games: result.games.length,
-          error: result.error,
-          // include any url or debug info if present
-          url: (result as any).url || undefined,
-        });
-        // if it timed out or network error with no games, retry uncapped so remote
-        // fallback can execute
-        if ((result.error === 'TIMEOUT' || result.error === 'NETWORK') && result.games.length === 0) {
-          console.log('[CreatePass] first attempt failed, retrying without timeout');
-          const retry = await fetchScheduleViaBackend({
-            leagueId: league.id,
-            teamId: team.id,
-            teamName: team.name,
-            teamAbbreviation: team.abbreviation,
-          });
-          console.log('[CreatePass] uncapped retry returned', {
-            games: retry.games.length,
-            error: retry.error,
-            url: retry.url,
-          });
-          result = retry;
-        }
-        games = result.games;
-        games = fillOpponentLogosForLeague(games, league.id);
+  games = result.games;
+  // Try to populate opponent logos immediately for fetched schedules
+  games = fillOpponentLogosForLeague(games, league.id);
+        
         if (result.error && games.length === 0) {
           if (result.error === 'NETWORK') {
             scheduleError = 'Backend unreachable. Schedule will load when available.';
@@ -2459,22 +2151,16 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
             scheduleError = 'Could not fetch schedule. Tap Resync in Settings to retry.';
           }
         }
+        
         console.log('[CreatePass] Schedule fetch completed - games:', games.length, 'error:', result.error);
       } catch (e: any) {
-        console.error('[CreatePass] FATAL: Schedule fetch threw exception:', e?.message || e);
-        fatalError = String(e?.message || e);
+        console.warn('[CreatePass] Schedule fetch failed:', e?.message || e);
         scheduleError = 'Schedule fetch failed. Tap Resync in Settings to retry.';
       }
     }
     
     if (scheduleError) {
       setLastScheduleError(scheduleError);
-      console.warn('[CreatePass] Schedule error:', scheduleError);
-    }
-    if (fatalError) {
-      Alert.alert('Critical Error', `Failed to create season pass: ${fatalError}`);
-      console.error('[CreatePass] Aborting due to fatal error:', fatalError);
-      return null;
     }
 
     console.log('[CreatePass] Creating new pass object...');
@@ -2497,7 +2183,6 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     console.log('[CreatePass] Stored teamAbbreviation:', newPass.teamAbbreviation);
 
     // CRITICAL: Read existing passes from ALL storage locations to avoid losing data
-    console.log('[CreatePass] About to read and merge existing passes for storage...');
     let existingPasses: SeasonPass[] = [];
     try {
       const existingRaw = await AsyncStorage.getItem(SEASON_PASSES_KEY);
@@ -2579,7 +2264,6 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     console.log('[CreatePass] 🔄 Setting activeSeasonPassId to NEW pass:', newPass.id);
     setActiveSeasonPassId(newPass.id);
     setNeedsSetup(false);
-    console.log('[CreatePass] State updated. seasonPasses:', updatedPasses.map(p => p.teamName), 'activeSeasonPassId:', newPass.id);
     
     // Update backup status
     setLastBackupTime(new Date().toLocaleString());
@@ -2697,10 +2381,6 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
   ) => {
     const pass = seasonPasses.find(sp => sp.id === passId);
     if (pass) {
-      // Save rewind backup BEFORE making the change
-      const currentSalesCount = countTotalSales(seasonPasses);
-      await saveRewindBackup(seasonPasses, activeSeasonPassId, `Before adding sale (${currentSalesCount} sales)`);
-      
       const updatedSalesData = { ...pass.salesData };
       if (!updatedSalesData[gameId]) {
         updatedSalesData[gameId] = {};
@@ -2719,15 +2399,11 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
       setSalesDataVersion(v => v + 1);
       console.log('[SeasonPass] Added sale record - auto-backup triggered via updateSeasonPass');
     }
-  }, [seasonPasses, activeSeasonPassId, updateSeasonPass, countTotalSales, saveRewindBackup]);
+  }, [seasonPasses, updateSeasonPass]);
 
   const removeSaleRecord = useCallback(async (passId: string, gameId: string, pairId: string) => {
     const pass = seasonPasses.find(sp => sp.id === passId);
     if (!pass) return;
-
-    // Save rewind backup BEFORE making the change
-    const currentSalesCount = countTotalSales(seasonPasses);
-    await saveRewindBackup(seasonPasses, activeSeasonPassId, `Before removing sale (${currentSalesCount} sales)`);
 
     const updatedSalesData = { ...pass.salesData };
     if (!updatedSalesData[gameId]) return;
@@ -2746,7 +2422,7 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     // Increment version to force stats recalculation
     setSalesDataVersion(v => v + 1);
     console.log('[SeasonPass] Removed sale record - auto-backup triggered via updateSeasonPass');
-  }, [seasonPasses, activeSeasonPassId, updateSeasonPass, countTotalSales, saveRewindBackup]);
+  }, [seasonPasses, updateSeasonPass]);
 
   const updateGames = useCallback(async (passId: string, games: Game[]) => {
     await updateSeasonPass(passId, { games });
@@ -2757,10 +2433,6 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     console.log('[SeasonPass] fetchScheduleForPass for:', pass.teamName, pass.seasonLabel, 'overwrite:', options?.overwrite);
     console.log('[SeasonPass] fetchScheduleForPass - pass.teamId:', pass.teamId);
     console.log('[SeasonPass] fetchScheduleForPass - pass.teamAbbreviation:', pass.teamAbbreviation);
-    if (!pass.teamId || !pass.teamId.trim()) {
-      console.warn('[SeasonPass] fetchScheduleForPass aborted - missing teamId');
-      return { games: [], error: 'INVALID_TEAM' };
-    }
     
     try {
       // If this is the Florida Panthers (NHL) use the bundled Panthers schedule.
@@ -2771,48 +2443,23 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
         return { games: PANTHERS_20252026_SCHEDULE };
       }
       
-      let result = await fetchScheduleWithMasterTimeout({
+      const result = await fetchScheduleWithMasterTimeout({
         leagueId: pass.leagueId,
         teamId: pass.teamId,
         teamName: pass.teamName,
         teamAbbreviation: pass.teamAbbreviation,
       });
 
-      console.log('[SeasonPass] fetchScheduleForPass - initial result', {
-        games: result.games.length,
-        error: result.error,
-        url: (result as any).url || undefined,
-      });
-
-      // if first attempt was timeout/network and returned nothing, retry uncapped
-      if ((result.error === 'TIMEOUT' || result.error === 'NETWORK') && result.games.length === 0) {
-        console.log('[SeasonPass] initial fetch timed out/failed, retrying uncapped');
-        const retry = await fetchScheduleViaBackend({
-          leagueId: pass.leagueId,
-          teamId: pass.teamId,
-          teamName: pass.teamName,
-          teamAbbreviation: pass.teamAbbreviation,
-        });
-        console.log('[SeasonPass] uncapped retry result', {
-          games: retry.games.length,
-          error: retry.error,
-          url: retry.url,
-        });
-        result = retry;
-      }
-
+      console.log('[SeasonPass] fetchScheduleForPass - Fetched', result.games.length, 'HOME games, error:', result.error);
+      
       let errorMsg: string | undefined;
       if (result.error === 'API_KEY_MISSING') {
         errorMsg = 'Ticketmaster API key not configured.';
       } else if (result.error === 'CORS') {
         errorMsg = 'Request blocked. Try on mobile device.';
       } else if (result.error && result.games.length === 0) {
-        errorMsg = 'Could not fetch schedule.' + (result.url ? ` (${result.url})` : '');
+        errorMsg = 'Could not fetch schedule.';
       }
-      // also include debug url in returned object
-      const ret: { games: Game[]; error?: string; errorMessage?: string } = { games: result.games };
-      if (errorMsg) ret.errorMessage = errorMsg;
-      return ret;
       
       return { games: result.games, error: errorMsg };
     } catch (error: any) {
@@ -2824,11 +2471,6 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
   const loadScheduleIfNeeded = useCallback(async (pass: SeasonPass) => {
     if (!pass || pass.games.length > 0) {
       console.log('[SeasonPass] Schedule already loaded or pass is null, skipping fetch');
-      return;
-    }
-    if (!pass.teamId || !pass.teamId.trim()) {
-      console.warn('[SeasonPass] Cannot load schedule: missing teamId for pass', pass.id);
-      setLastScheduleError('Missing team ID – edit or recreate your pass with a valid team.');
       return;
     }
 
@@ -2872,14 +2514,6 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
       console.log('[Resync] Available passes:', seasonPasses.map(p => ({ id: p.id, team: p.teamName })));
       console.log('========== END RESYNC (PASS NOT FOUND) ==========\n');
       return { success: false, error: 'Pass not found' };
-    }
-
-    // validate team id before attempting fetch
-    if (!pass.teamId || !pass.teamId.trim()) {
-      console.warn('[Resync] cannot resync, pass has empty teamId:', passId);
-      setLastScheduleError('Schedule cannot be fetched: pass missing team ID. Edit or recreate the pass.');
-      console.log('========== END RESYNC (INVALID_TEAM) ==========\n');
-      return { success: false, error: 'INVALID_TEAM' };
     }
 
     console.log('[Resync] Found pass:', pass.id);
@@ -2958,7 +2592,9 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
             }
           };
 
-          const gamesWithLogos = fillOpponentLogos(result.games, pass.leagueId);
+          let gamesWithLogos = fillOpponentLogos(result.games, pass.leagueId);
+          // ensure we merge any home‑only preseason games from ESPN source
+          await mergePreseasonFromESPN(gamesWithLogos, pass);
 
           const updatedPasses = seasonPasses.map(sp => {
             if (sp.id !== passId) return sp;
@@ -2989,17 +2625,17 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
           success = false;
           
           if (result.error === 'API_KEY_MISSING') {
-            errorMsg = 'Schedule service not configured.';
+            errorMsg = 'Ticketmaster API key not configured.';
           } else if (result.error === 'CORS') {
             errorMsg = 'Request blocked. Try on mobile device.';
           } else if (result.error === 'TIMEOUT') {
             errorMsg = 'Request timed out. Please try again.';
           } else if (result.error === 'NO_TEAM') {
-            errorMsg = `Schedule for "${pass.teamName}" not available.`;
+            errorMsg = `Team "${pass.teamName}" not found.`;
           } else if (result.error === 'NETWORK') {
-            errorMsg = 'Schedule service unavailable. Please try again later.';
+            errorMsg = 'Backend unreachable. Please try again later.';
           } else {
-            errorMsg = 'Could not refresh schedule. Please try again later.';
+            errorMsg = 'Could not fetch schedule. Please try again later.';
           }
           setLastScheduleError(errorMsg);
         }
@@ -3007,7 +2643,7 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     } catch (error: any) {
       console.error('[Resync] ❌ Unexpected error:', error?.message || error);
       success = false;
-      errorMsg = 'Schedule refresh failed. Please try again.';
+      errorMsg = 'Schedule fetch failed. Please try again.';
       setLastScheduleError(errorMsg);
     } finally {
       console.log('[Resync] 🔄 FINALLY block - Setting isLoadingSchedule = false');
@@ -3957,10 +3593,9 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     }
   }, []);
 
-  const exportAsJSON = useCallback(async (): Promise<boolean> => {
+  const exportAsJSON = useCallback(async (embedLogos = false): Promise<boolean> => {
     try {
-      // Always embed logos for offline restore capability
-      const backup = await generateBackup(true);
+      const backup = await generateBackup(embedLogos);
       const jsonString = JSON.stringify(backup, null, 2);
       const fileName = `SeasonPassBackup_${new Date().toISOString().split('T')[0]}.json`;
       
@@ -4190,9 +3825,14 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
         return `"${q}"`;
       };
 
-      // Build CSV with one row per SALE (not per game) so it can be re-imported
+      // Build CSV file content for per-game rows (one line per game that has sales)
+      // Also build a TSV of per-sale rows and copy that to clipboard for drill-down in Excel.
       const csvRows: string[] = [];
-      csvRows.push(['Team', 'League', 'Season', 'GameID', 'Opponent', 'GameDate', 'Section', 'Row', 'Seats', 'SeatCount', 'SalePrice', 'PaymentStatus', 'Sold Date'].join(','));
+      csvRows.push(['Team', 'League', 'Season', 'GameID', 'GameNumber', 'Opponent', 'GameDate', 'Time', 'PairsSold', 'SeatsSold', 'Revenue', 'PendingPayments'].join(','));
+
+      const tsvRows: string[] = [];
+      // per-sale TSV headers for clipboard (detailed rows)
+      tsvRows.push(['Team', 'League', 'Season', 'GameID', 'Opponent', 'GameDate', 'Section', 'Row', 'Seats', 'SalePrice', 'PaymentStatus', 'Sold Date'].join('\t'));
 
       seasonPasses.forEach(pass => {
         const orderedGames = [...pass.games].sort((a, b) => {
@@ -4206,10 +3846,19 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
 
         orderedGames.forEach(game => {
           const gameSales = pass.salesData[game.id] || {};
+          const soldPairs = Object.keys(gameSales).length;
 
-          // One row per sale
+          let seatsSold = 0;
+          let revenue = 0;
+          let pending = 0;
+
           Object.values(gameSales).forEach((sale: any) => {
             const sc = typeof sale.seatCount === 'number' ? sale.seatCount : parseSeatsCount(sale?.seats);
+            seatsSold += sc;
+            revenue += sale.price || 0;
+            if (sale.paymentStatus === 'Pending') pending += 1;
+
+            // collect per-sale TSV rows for clipboard
             const saleRow = [
               pass.teamName,
               (pass.leagueId || '').toUpperCase(),
@@ -4219,21 +3868,57 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
               game.date || '',
               sale.section || '',
               sale.row || '',
-              sale.seats || '',
-              String(sc || 2),
-              (typeof sale.price === 'number') ? Number(sale.price).toFixed(2) : '0.00',
-              sale.paymentStatus || 'Paid',
+              sale.seats || (sc || ''),
+              (typeof sale.price === 'number') ? Number(sale.price).toFixed(2) : '',
+              sale.paymentStatus || '',
               sale.soldDate ? new Date(sale.soldDate).toLocaleDateString() : '',
             ];
-            csvRows.push(saleRow.map(escape).join(','));
+            tsvRows.push(saleRow.map(r => (r === null || r === undefined) ? '' : String(r)).join('\t'));
           });
+
+          if (soldPairs === 0) {
+            const gameRow = [
+              pass.teamName,
+              (pass.leagueId || '').toUpperCase(),
+              pass.seasonLabel,
+              game.id,
+              game.gameNumber || '',
+              game.opponent || 'Unknown',
+              game.date || '',
+              game.time || '',
+              '0',
+              '0',
+              '0.00',
+              '0',
+            ];
+            csvRows.push(gameRow.map(escape).join(','));
+            return;
+          }
+
+          const gameRow = [
+            pass.teamName,
+            (pass.leagueId || '').toUpperCase(),
+            pass.seasonLabel,
+            game.id,
+            game.gameNumber || '',
+            game.opponent || 'Unknown',
+            game.date || '',
+            game.time || '',
+            String(soldPairs),
+            String(seatsSold),
+            revenue.toFixed(2),
+            String(pending),
+          ];
+
+          csvRows.push(gameRow.map(escape).join(','));
         });
       });
 
       const csvContent = '\uFEFF' + csvRows.join('\n'); // prepend BOM so Excel recognizes UTF-8
+      const tsvContent = tsvRows.join('\n');
 
-      // Save the CSV as a file
-      const fileName = `SeasonPassSales_${new Date().toISOString().split('T')[0]}.csv`;
+      // Save the CSV as a file (native share/download), and copy TSV to clipboard for quick Excel paste
+      const fileName = `SeasonPassBackup_${new Date().toISOString().split('T')[0]}.csv`;
 
       if (Platform.OS === 'web') {
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -4243,6 +3928,8 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
         a.download = fileName;
         a.click();
         URL.revokeObjectURL(url);
+        // Also copy TSV to clipboard to help Excel users
+        try { await Clipboard.setStringAsync(tsvContent); } catch {}
         return true;
       }
 
@@ -4250,12 +3937,12 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
       const fileUri = FileSystem.documentDirectory + fileName;
       await FileSystem.writeAsStringAsync(fileUri, csvContent, { encoding: FileSystem.EncodingType.UTF8 });
 
-      // Also copy to clipboard for easy paste
+      // Copy TSV to clipboard so pasting into Excel/Numbers yields separate columns
       try {
-        await Clipboard.setStringAsync(csvContent);
-        console.log('[SeasonPass] CSV copied to clipboard');
+        await Clipboard.setStringAsync(tsvContent);
+        console.log('[SeasonPass] TSV copied to clipboard for Excel paste');
       } catch (e: any) {
-        console.warn('[SeasonPass] Failed to copy CSV to clipboard:', e);
+        console.warn('[SeasonPass] Failed to copy TSV to clipboard:', e);
       }
 
       if (await Sharing.isAvailableAsync()) {
@@ -4267,215 +3954,13 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
         console.log('[SeasonPass] CSV saved to:', fileUri);
       }
 
-      console.log('[SeasonPass] Exported CSV file with', csvRows.length - 1, 'sales');
+      console.log('[SeasonPass] Exported CSV file and copied TSV to clipboard');
       return true;
     } catch (e) {
       console.error('[SeasonPass] Export CSV failed:', e);
       return false;
     }
   }, [seasonPasses]);
-
-  // ============ SIMPLIFIED IMPORT/EXPORT ============
-  // These functions export in a format that can be directly re-imported without any validation issues.
-
-  /**
-   * Import from a JSON backup file. Accepts the exact format that exportAsJSON produces.
-   * Completely replaces all data with the backup contents.
-   */
-  const importFromJSONBackup = useCallback(async (jsonString: string): Promise<{ success: boolean; message: string }> => {
-    try {
-      console.log('[Import] Parsing JSON backup, length:', jsonString.length);
-      const data = JSON.parse(jsonString);
-      
-      // Validate structure
-      if (!data.seasonPasses || !Array.isArray(data.seasonPasses)) {
-        return { success: false, message: 'Invalid backup: missing seasonPasses array' };
-      }
-
-      // Save rewind backup BEFORE importing
-      const currentSalesCount = countTotalSales(seasonPasses);
-      await saveRewindBackup(seasonPasses, activeSeasonPassId, `Before JSON import (${currentSalesCount} sales)`);
-
-      // Normalize and restore
-      const normalized = data.seasonPasses.map(normalizeSeasonPass);
-      const activeId = data.activeSeasonPassId || (normalized.length > 0 ? normalized[0].id : null);
-
-      // Save to storage
-      await AsyncStorage.setItem(SEASON_PASSES_KEY, JSON.stringify(normalized));
-      await AsyncStorage.setItem(ACTIVE_PASS_KEY, JSON.stringify(activeId));
-      await AsyncStorage.setItem(DATA_IMPORTED_KEY, 'true');
-
-      // Update state
-      setSeasonPasses(normalized);
-      setActiveSeasonPassId(activeId);
-      setNeedsSetup(normalized.length === 0);
-
-      const totalSales = normalized.reduce((sum: number, pass: SeasonPass) => {
-        return sum + Object.values(pass.salesData || {}).reduce((gSum: number, gameSales: any) => {
-          return gSum + Object.keys(gameSales || {}).length;
-        }, 0);
-      }, 0);
-
-      console.log('[Import] ✅ Restored', normalized.length, 'passes with', totalSales, 'sales');
-      return { success: true, message: `Restored ${normalized.length} season pass(es) with ${totalSales} sales` };
-    } catch (e: any) {
-      console.error('[Import] JSON import failed:', e);
-      return { success: false, message: `Import failed: ${e.message || 'Unknown error'}` };
-    }
-  }, [seasonPasses, activeSeasonPassId, countTotalSales, saveRewindBackup]);
-
-  /**
-   * Import from CSV in the exact format that exportAsCSV produces.
-   * This imports sales data into the active season pass.
-   * CSV format: Team,League,Season,GameID,Opponent,GameDate,Section,Row,Seats,SeatCount,SalePrice,PaymentStatus,Sold Date
-   */
-  const importFromCSVBackup = useCallback(async (csvString: string): Promise<{ success: boolean; message: string }> => {
-    try {
-      if (!activeSeasonPassId) {
-        return { success: false, message: 'No active season pass. Create or select a pass first.' };
-      }
-
-      // Save rewind backup BEFORE importing
-      const currentSalesCount = countTotalSales(seasonPasses);
-      await saveRewindBackup(seasonPasses, activeSeasonPassId, `Before CSV import (${currentSalesCount} sales)`);
-
-      console.log('[Import] Parsing CSV backup, length:', csvString.length);
-      const lines = csvString.split(/\r?\n/).filter(line => line.trim());
-      if (lines.length < 2) {
-        return { success: false, message: 'CSV file is empty or has no data rows' };
-      }
-
-      // Parse header - use FIRST occurrence of each column (ignore duplicates at the end)
-      const header = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-      const colIdx: Record<string, number> = {};
-      header.forEach((h, i) => { 
-        const key = h.toLowerCase();
-        // Only use first occurrence of each column name
-        if (!(key in colIdx)) {
-          colIdx[key] = i; 
-        }
-      });
-      
-      console.log('[Import] Header columns:', header.slice(0, 13).join(', '));
-      console.log('[Import] Column indices:', JSON.stringify(colIdx));
-
-      // Map common column variations
-      const getCol = (row: string[], ...names: string[]): string => {
-        for (const name of names) {
-          const idx = colIdx[name.toLowerCase()];
-          if (idx !== undefined && idx < row.length && row[idx]) {
-            return row[idx].replace(/^"|"$/g, '').trim();
-          }
-        }
-        return '';
-      };
-
-      // Get current pass
-      const passIdx = seasonPasses.findIndex(p => p.id === activeSeasonPassId);
-      if (passIdx === -1) {
-        return { success: false, message: 'Active season pass not found' };
-      }
-
-      const pass = { ...seasonPasses[passIdx] };
-      const newSalesData = { ...pass.salesData };
-      let salesImported = 0;
-
-      // Parse each row
-      for (let i = 1; i < lines.length; i++) {
-        // Handle quoted CSV properly
-        const row: string[] = [];
-        let current = '';
-        let inQuotes = false;
-        for (const ch of lines[i]) {
-          if (ch === '"') {
-            inQuotes = !inQuotes;
-          } else if (ch === ',' && !inQuotes) {
-            row.push(current);
-            current = '';
-          } else {
-            current += ch;
-          }
-        }
-        row.push(current);
-
-        const gameId = getCol(row, 'GameID', 'gameid', 'game_id', 'Game ID');
-        const section = getCol(row, 'Section', 'section');
-        const rowStr = getCol(row, 'Row', 'row');
-        const seats = getCol(row, 'Seats', 'seats');
-        const seatCount = parseInt(getCol(row, 'SeatCount', 'seatcount', 'seat_count', 'Seat Count') || '2', 10);
-        const price = parseFloat(getCol(row, 'SalePrice', 'Price', 'price', 'saleprice', 'sale_price') || '0');
-        const paymentStatus = getCol(row, 'PaymentStatus', 'paymentstatus', 'payment_status', 'Payment Status') || 'Paid';
-        const soldDateStr = getCol(row, 'Sold Date', 'solddate', 'sold_date', 'SoldDate');
-
-        if (!gameId || !section || !rowStr) continue;
-
-        // Create pair ID from section/row
-        const pairId = `${section}_${rowStr}`.replace(/\s+/g, '');
-        
-        // Ensure seatPair exists
-        const existingPair = pass.seatPairs.find(p => 
-          p.section === section && p.row === rowStr
-        );
-        if (!existingPair) {
-          pass.seatPairs.push({
-            id: pairId,
-            section,
-            row: rowStr,
-            seats: seats || '1-2',
-            seasonCost: 0,
-          });
-        }
-
-        // Initialize game sales if needed
-        if (!newSalesData[gameId]) {
-          newSalesData[gameId] = {};
-        }
-
-        // Use existing pairId if found, otherwise the generated one
-        const actualPairId = existingPair?.id || pairId;
-        const saleId = `${gameId}_${actualPairId}`;
-
-        // Parse sold date
-        let soldDate: string | undefined;
-        if (soldDateStr) {
-          try {
-            const d = new Date(soldDateStr);
-            if (!isNaN(d.getTime())) soldDate = d.toISOString();
-          } catch { /* ignore */ }
-        }
-
-        newSalesData[gameId][actualPairId] = {
-          id: saleId,
-          gameId,
-          pairId: actualPairId,
-          section,
-          row: rowStr,
-          seats: seats || '1-2',
-          seatCount: seatCount || 2,
-          price: price || 0,
-          paymentStatus: paymentStatus as 'Paid' | 'Pending',
-          soldDate: soldDate || new Date().toISOString(),
-        };
-        salesImported++;
-      }
-
-      // Update pass with new data
-      pass.salesData = newSalesData;
-      
-      const newPasses = [...seasonPasses];
-      newPasses[passIdx] = pass;
-      
-      await AsyncStorage.setItem(SEASON_PASSES_KEY, JSON.stringify(newPasses));
-      setSeasonPasses(newPasses);
-      setSalesDataVersion(v => v + 1);
-
-      console.log('[Import] ✅ CSV imported', salesImported, 'sales');
-      return { success: true, message: `Imported ${salesImported} sales from CSV` };
-    } catch (e: any) {
-      console.error('[Import] CSV import failed:', e);
-      return { success: false, message: `Import failed: ${e.message || 'Unknown error'}` };
-    }
-  }, [activeSeasonPassId, seasonPasses, countTotalSales, saveRewindBackup]);
 
   const emailBackup = useCallback(async (embedLogos = false): Promise<{ success: boolean; isWeb: boolean }> => {
     try {
@@ -4836,8 +4321,6 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     exportAsJSON,
     exportAsExcel,
     exportAsCSV,
-    importFromJSONBackup,
-    importFromCSVBackup,
     emailBackup,
       prepareBackupPackage,
     restorePanthersData,
@@ -4851,8 +4334,5 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
     backupConfirmationMessage,
     retryBackup,
     reloadFromStorage: loadData,
-    // Rewind (undo) functionality
-    rewindBackups,
-    revertToBackup,
   };
 });

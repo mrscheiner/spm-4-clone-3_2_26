@@ -1,24 +1,33 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
-import { TeamTheme } from '@/constants/teamThemes';
+import React, { createContext, useContext, useMemo } from 'react';
+import { useSeasonPass } from '@/providers/SeasonPassProvider';
+import { getTeamTheme, TeamTheme } from '@/constants/teamThemes';
 
-interface AppThemeContextProps {
+interface AppThemeContextValue {
   theme: TeamTheme;
-  setTheme: (theme: TeamTheme) => void;
 }
 
-const AppThemeContext = createContext<AppThemeContextProps | undefined>(undefined);
+const DEFAULT_VALUE: AppThemeContextValue = {
+  theme: getTeamTheme(),
+};
 
-export function AppThemeProvider({ children, initialTheme }: { children: ReactNode; initialTheme: TeamTheme }) {
-  const [theme, setTheme] = useState<TeamTheme>(initialTheme);
-  return (
-    <AppThemeContext.Provider value={{ theme, setTheme }}>
-      {children}
-    </AppThemeContext.Provider>
-  );
+const AppThemeContext = createContext<AppThemeContextValue>(DEFAULT_VALUE);
+
+interface AppThemeProviderProps {
+  initialTheme?: TeamTheme;
 }
 
-export function useAppTheme() {
-  const context = useContext(AppThemeContext);
-  if (!context) throw new Error('useAppTheme must be used within AppThemeProvider');
-  return context;
+export const AppThemeProvider: React.FC<React.PropsWithChildren<AppThemeProviderProps>> = ({ children, initialTheme }) => {
+  const { activeSeasonPass } = useSeasonPass();
+  const theme = useMemo(() => {
+    if (activeSeasonPass && activeSeasonPass.teamId) {
+      return getTeamTheme(activeSeasonPass.teamId);
+    }
+    if (initialTheme) return initialTheme;
+    return getTeamTheme();
+  }, [activeSeasonPass, initialTheme]);
+  return <AppThemeContext.Provider value={{ theme }}>{children}</AppThemeContext.Provider>;
+};
+
+export function useAppTheme(): AppThemeContextValue {
+  return useContext(AppThemeContext);
 }
