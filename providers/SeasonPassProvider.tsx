@@ -310,22 +310,39 @@ async function fetchScheduleViaBackend(pass: {
   try {
     let baseUrl = process.env.EXPO_PUBLIC_RORK_API_BASE_URL || '';
     baseUrl = resolveApiBaseUrl(baseUrl);
-    // Use correct season code for each league
-    switch (pass.leagueId.toLowerCase()) {
-      case 'nba':
-      case 'mlb':
-      case 'nhl':
-        seasonCode = '2025';
-        break;
-      case 'nfl':
-        seasonCode = '2025'; // backend will append REG
-        break;
-      case 'mls':
-        seasonCode = '2025';
-        break;
-      default:
-        seasonCode = String(new Date().getFullYear());
-    }
+
+    // dynamically compute the season code instead of hard‑coding '2025'.  The
+    // previous logic returned the same year regardless of the current date, so
+    // when the calendar rolled past June 2025 every team was still pulling the
+    // 2024‑25 season which looked “random” or stale.  We also note that
+    // SportsDataIO does **not** include preseason games, so those will never
+    // appear unless we fall back to ESPN or another source.
+    const determineSeasonCode = (leagueId: string): string => {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth();
+      switch (leagueId.toLowerCase()) {
+        case 'nba':
+        case 'nhl':
+          // seasons span two calendar years; use the ending year (e.g. Dec‑2025
+          // => 2026 season).  After June we consider the upcoming season.
+          return month >= 6 ? String(year + 1) : String(year);
+        case 'mlb':
+          // single‑year season; during Dec turn over to next year
+          return month >= 11 ? String(year + 1) : String(year);
+        case 'nfl':
+          // NFL uses the start year.  In Jan/Feb we still want the previous
+          // season (playoffs/Super Bowl).  Otherwise current year.
+          return month <= 1 ? String(year - 1) : String(year);
+        case 'mls':
+          // calendar year season
+          return month >= 11 ? String(year + 1) : String(year);
+        default:
+          return String(year);
+      }
+    };
+
+    seasonCode = determineSeasonCode(pass.leagueId);
     const apiTeamId = pickApiTeamId(pass);
     const url = `${baseUrl}/api/schedule?league=${encodeURIComponent(pass.leagueId)}&teamId=${encodeURIComponent(apiTeamId)}&season=${encodeURIComponent(seasonCode)}&type=home`;
     console.log('[ScheduleFetch] Fetching schedule from unified backend endpoint:', url);
