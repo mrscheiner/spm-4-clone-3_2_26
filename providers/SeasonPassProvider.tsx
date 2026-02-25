@@ -41,6 +41,16 @@ async function withMasterTimeout<T>(promise: Promise<T>, ms: number, fallback: T
   }
 }
 
+// utility: sort games so all preseason come first, then regular; renumber both sequences
+function reorderAndRenumber(games: Game[]): Game[] {
+  const byDate = (a: Game, b: Game) => new Date(a.dateTimeISO).getTime() - new Date(b.dateTimeISO).getTime();
+  const preseason = games.filter(g => g.type === 'Preseason').sort(byDate);
+  const others = games.filter(g => g.type !== 'Preseason').sort(byDate);
+  preseason.forEach((g,i)=> { g.gameNumber = `PS ${i+1}`; });
+  others.forEach((g,i)=> { g.gameNumber = `${i+1}`; });
+  return [...preseason, ...others];
+}
+
 // helpers for direct ESPN site API fetching (avoid tRPC client and return only home games)
 const ESPN_LEAGUE_CONFIG: Record<string, { sport: string; league: string }> = {
   nba: { sport: "basketball", league: "nba" },
@@ -436,8 +446,9 @@ async function mergePreseasonFromESPN(arr: Game[], pass: {
           g.gameNumber = `PS ${psCount}`;
           arr.unshift(g);
         }
-        // after merging, sort full array by date/time to maintain order across types
-        arr.sort((a,b) => new Date(a.dateTimeISO).getTime() - new Date(b.dateTimeISO).getTime());
+        // after merging, rebuild list so preseason entries stay at top and renumber
+        const reordered = reorderAndRenumber(arr);
+        arr.splice(0, arr.length, ...reordered);
       }
     }
   } catch (e) {
@@ -1846,6 +1857,8 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
 
   // Normalize passes to ensure `games` and related fields always exist
   passes = passes.map(normalizeSeasonPass);
+  // ensure ordering/numbering of any pre-existing schedules
+  passes = passes.map(p => ({ ...p, games: reorderAndRenumber(p.games || []) }));
 
   // Helper: robustly find a team logo URL for a given opponent string and league
   const findLogoForOpponent = (opponentText: string | undefined, leagueId?: string): string | undefined => {
@@ -2303,6 +2316,7 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
           teamName: team.name,
           teamAbbreviation: team.abbreviation,
         });
+        games = reorderAndRenumber(games);
         
         if (result.error && games.length === 0) {
           if (result.error === 'NETWORK') {
@@ -2618,6 +2632,7 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
       // ensure preseason games merged/replaced
       let gamesWithLogos = fillOpponentLogosForLeague(result.games, pass.leagueId);
       await mergePreseasonFromESPN(gamesWithLogos, pass);
+      gamesWithLogos = reorderAndRenumber(gamesWithLogos);
       result.games = gamesWithLogos;
       
       let errorMsg: string | undefined;
@@ -2766,6 +2781,7 @@ export const [SeasonPassProvider, useSeasonPass] = createContextHook(() => {
           let gamesWithLogos = fillOpponentLogos(result.games, pass.leagueId);
           // always attempt ESPN merge; the helper will replace duplicates by datetime
           await mergePreseasonFromESPN(gamesWithLogos, pass);
+          gamesWithLogos = reorderAndRenumber(gamesWithLogos);
 
           const updatedPasses = seasonPasses.map(sp => {
             if (sp.id !== passId) return sp;
