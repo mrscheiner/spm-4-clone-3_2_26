@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert, Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
@@ -14,6 +15,7 @@ type SetupStep = 'league' | 'team' | 'season' | 'seats' | 'confirm';
 
 export default function SetupScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { createSeasonPass, seasonPasses } = useSeasonPass();
 
   const [step, setStep] = useState<SetupStep>('league');
@@ -179,32 +181,35 @@ export default function SetupScreen() {
   const teams = selectedLeague ? getTeamsByLeague(selectedLeague.id) : [];
 
   const renderLeagueStep = () => (
-    <View style={styles.stepContainer}>
-      <View style={styles.brandingHeader}>
-        <Image 
-          source={{ uri: 'https://pub-e001eb4506b145aa938b5d3badbff6a5.r2.dev/attachments/4ova8g9grto8ehefm7bwe' }} 
-          style={styles.appLogo} 
-          contentFit="contain" 
-        />
+    <View style={[styles.stepContainer, styles.leagueContainer]}>
+      <View>
+        <Text style={styles.stepTitle}>Choose Your League</Text>
+        <Text style={styles.stepSubtitle}>Select the league for your season tickets</Text>
+        <View style={styles.leagueGrid}>
+          {LEAGUES.map(league => (
+            <TouchableOpacity
+              key={league.id}
+              style={styles.leagueCard}
+              onPress={() => handleSelectLeague(league)}
+              activeOpacity={0.7}
+            >
+              {league.logoUrl ? (
+                <Image source={{ uri: league.logoUrl }} style={styles.leagueLogo} contentFit="contain" />
+              ) : (
+                <View style={[styles.leagueLogo, styles.logoPlaceholder]} />
+              )}
+              <Text style={styles.leagueName}>{league.shortName}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
       </View>
-      <Text style={styles.stepTitle}>Choose Your League</Text>
-      <Text style={styles.stepSubtitle}>Select the league for your season tickets</Text>
-      <View style={styles.leagueGrid}>
-        {LEAGUES.map(league => (
-          <TouchableOpacity
-            key={league.id}
-            style={styles.leagueCard}
-            onPress={() => handleSelectLeague(league)}
-            activeOpacity={0.7}
-          >
-            {league.logoUrl ? (
-              <Image source={{ uri: league.logoUrl }} style={styles.leagueLogo} contentFit="contain" />
-            ) : (
-              <View style={[styles.leagueLogo, styles.logoPlaceholder]} />
-            )}
-            <Text style={styles.leagueName}>{league.shortName}</Text>
-          </TouchableOpacity>
-        ))}
+
+      <View style={styles.leagueFooter}>
+        <Image
+          source={{ uri: 'https://pub-e001eb4506b145aa938b5d3badbff6a5.r2.dev/attachments/4ova8g9grto8ehefm7bwe' }}
+          style={styles.appLogo}
+          contentFit="contain"
+        />
       </View>
     </View>
   );
@@ -449,7 +454,14 @@ export default function SetupScreen() {
     <View style={styles.wrapper}>
       <SafeAreaView edges={['top']} style={styles.container}>
         {canGoBack && (
-          <TouchableOpacity style={styles.backButton} onPress={handleBack}>
+          <TouchableOpacity
+            style={[
+              styles.backButton,
+              styles.backButtonAbsolute,
+              { top: insets.top + 8 }
+            ]}
+            onPress={handleBack}
+          >
             <ChevronLeft size={24} color={AppColors.white} />
             <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
@@ -483,6 +495,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
+  backButtonAbsolute: {
+    position: 'absolute',
+    right: 16,
+    zIndex: 10,
+  },
   backText: {
     color: AppColors.white,
     fontSize: 16,
@@ -497,6 +514,14 @@ const styles = StyleSheet.create({
   },
   stepContainer: {
     padding: 20,
+  },
+  leagueContainer: {
+    flex: 1,
+    justifyContent: 'flex-start',
+  },
+  leagueFooter: {
+    alignItems: 'center',
+    marginTop: 24,
   },
   stepTitle: {
     fontSize: 28,

@@ -1,0 +1,28 @@
+  {
+    "label": "Start Wrangler Dev (Backend)",
+    "type": "shell",
+    "command": "npx wrangler dev --ip 127.0.0.1 --port 8787",
+    "options": {
+      "cwd": "${workspaceFolder}/backend"
+    },
+    "problemMatcher": [],
+    "group": "build"
+  },
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Wrangler Dev",
+      "type": "shell",
+      "command": "npx wrangler dev worker.ts --ip 127.0.0.1 --port 8787",
+      "options": {
+        "cwd": "${workspaceFolder}/backend"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "isBackground": false
+    }
+  ]
+}

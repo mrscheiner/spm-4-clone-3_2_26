@@ -283,12 +283,30 @@ export default function ScheduleScreen() {
           : parseSeatsCount(sale?.seats) || 2;
         return acc + sc;
       }, 0);
-const ticketsAvailable = ticketsPerGame - ticketsSold;
+      const ticketsAvailable = ticketsPerGame - ticketsSold;
       // ...existing code...
       const allPaid = seatPairIds.every(pairId => {
         const sale = pairsForGame[pairId];
         return sale && (sale.paymentStatus === 'Paid' || sale.paymentStatus.toLowerCase() === 'paid');
       });
+
+      // derive display fields if backend didn't supply them
+      let month = game.month;
+      let day = game.day;
+      let time = game.time;
+      if ((!month || !day || !time) && game.dateTimeISO) {
+        const dt = new Date(game.dateTimeISO);
+        if (!month) {
+          month = dt.toLocaleString('default', { month: 'short' });
+        }
+        if (!day) {
+          day = String(dt.getDate());
+        }
+        if (!time) {
+          time = dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+        }
+      }
+
       return {
         ...game,
         isPast,
@@ -296,6 +314,9 @@ const ticketsAvailable = ticketsPerGame - ticketsSold;
         ticketsSold,
         ticketsAvailable,
         allPaid,
+        month: month || '',
+        day: day || '',
+        time: time || '',
       };
     });
   }, [activeSeasonPass, salesDataHash]);
@@ -489,9 +510,9 @@ const ticketsAvailable = ticketsPerGame - ticketsSold;
               </Text>
             </View>
           ) : (
-            filteredGames.map((game) => (
+            filteredGames.map((game, idx) => (
               <TouchableOpacity 
-                key={game.id} 
+                key={game.id || `${game.date || game.dateTimeISO || ''}-${idx}`}
                 style={[
                   styles.gameCard,
                   game.isPast && styles.gameCardPast

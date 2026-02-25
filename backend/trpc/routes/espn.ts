@@ -169,7 +169,7 @@ export const espnRouter = createTRPCRouter({
           console.log('[ESPN_FULL] PATCH input parse error:', e);
         }
         console.log('[ESPN_FULL] Handler invoked. Patched input:', patchedInput);
-        if (!patchedInput || typeof patchedInput !== 'object' || !patchedInput.leagueId || !patchedInput.teamId || !patchedInput.teamName) {
+        if (!patchedInput || typeof patchedInput !== 'object' || !patchedInput.leagueId || !('teamId' in patchedInput) || !('teamName' in patchedInput)) {
           return { events: [], error: 'INVALID_INPUT' };
         }
       console.log('[ESPN_PROXY] getTeams HIT - input:', JSON.stringify(input));
@@ -347,18 +347,19 @@ export const espnRouter = createTRPCRouter({
 
       const norm = (s?: string) => (s ?? "").trim().toLowerCase();
       const wantedAbbr = norm(teamAbbr);
-      const wantedName = norm(teamName);
-
-      console.log('[ESPN_PROXY] Looking for team - abbr:', wantedAbbr, 'name:', wantedName);
+      const wantedAbbrNorm = norm(teamAbbr);
+      const wantedNameNorm = norm(teamName);
+      console.log('[ESPN_PROXY] Looking for team - abbr:', wantedAbbrNorm, 'name:', wantedNameNorm);
       const match =
-        teams.find((t) => norm(t?.abbreviation) === wantedAbbr) ||
-        teams.find((t) => norm(t?.shortDisplayName) === wantedName) ||
-        teams.find((t) => norm(t?.displayName) === wantedName) ||
-        teams.find((t) => norm(t?.name) === wantedName) ||
+        teams.find((t) => norm(t?.abbreviation) === wantedAbbrNorm) ||
+        teams.find((t) => norm(t?.shortDisplayName) === wantedNameNorm) ||
+        teams.find((t) => norm(t?.displayName) === wantedNameNorm) ||
+        teams.find((t) => norm(t?.name) === wantedNameNorm) ||
+        teams.find((t) => norm(t?.slug) === wantedNameNorm) ||
         null;
 
       if (!match?.id) {
-        console.log("[ESPN Proxy] Team not found:", { wantedAbbr, wantedName });
+        console.log("[ESPN Proxy] Team not found:", { wantedAbbr, wantedName: teamName });
         console.log('[ESPN_PROXY] Available teams:', teams.slice(0, 5).map(t => ({ abbr: t.abbreviation, name: t.displayName })));
         return { espnTeamId: null, schedule: null, error: "TEAM_NOT_FOUND" };
       }
@@ -504,6 +505,30 @@ export const espnRouter = createTRPCRouter({
           const tName = normSpaces(t?.displayName || t?.name || '');
           return tName.includes('oklahoma') && tName.includes('thunder');
         }) ||
+        // Extra: match any substring of teamName in any team field
+        teams.find((t) => {
+          const allFields = [t.abbreviation, t.displayName, t.shortDisplayName, t.name, t.location].map(norm).join(' ');
+          return wantedName && allFields.includes(wantedName);
+        }) ||
+        // Extra: match any substring of teamAbbr in any team field
+        teams.find((t) => {
+          const allFields = [t.abbreviation, t.displayName, t.shortDisplayName, t.name, t.location].map(norm).join(' ');
+          return wantedAbbr && allFields.includes(wantedAbbr);
+        }) ||
+        // Extra: match any word from teamName in any team field
+        teams.find((t) => {
+          const allFields = [t.abbreviation, t.displayName, t.shortDisplayName, t.name, t.location].map(norm).join(' ');
+          return teamNameWords.some(word => allFields.includes(word));
+        }) ||
+        // Extra: match ignoring spaces, dashes, and case
+        teams.find((t) => {
+          const allFields = [t.abbreviation, t.displayName, t.shortDisplayName, t.name, t.location].map(s => normSpaces(s)).join(' ');
+          return normSpaces(wantedName) && allFields.includes(normSpaces(wantedName));
+        }) ||
+        // Extra: match numeric team ID if available
+        teams.find((t) => {
+          return t.id && (String(t.id) === wantedAbbr || String(t.id) === wantedName);
+        }) ||
         null;
       
       // Additional NFL-specific matching
@@ -522,6 +547,29 @@ export const espnRouter = createTRPCRouter({
 
       if (!match?.id) {
         console.log('[ESPN_FULL] Team not found. Available:', teams.slice(0, 10).map(t => t.abbreviation));
+        // Log all teams for all major leagues for debugging
+        const leaguesToLog = ['nba', 'nfl', 'mls', 'nhl', 'mlb'];
+        for (const league of leaguesToLog) {
+          const cfg = ESPN_LEAGUE_CONFIG[league];
+          const teamsUrl = `${ESPN_SITE_BASE}/sports/${cfg.sport}/${cfg.league}/teams`;
+          try {
+            const res = await fetchWithTimeout(teamsUrl, 15000);
+            if (res && res.ok) {
+              const data = await res.json();
+              let leagueTeams = [];
+              if (data?.sports?.[0]?.leagues?.[0]?.teams) {
+                leagueTeams = data.sports[0].leagues[0].teams.map((t: any) => t.team).filter(Boolean);
+              } else if (data?.teams) {
+                leagueTeams = data.teams.map((t: any) => t.team).filter(Boolean);
+              }
+              console.log(`[ESPN_FULL] All teams for ${league}:`, leagueTeams.map(t => ({ id: t.id, abbr: t.abbreviation, name: t.displayName }))); 
+            } else {
+              console.log(`[ESPN_FULL] Failed to fetch teams for ${league}`);
+            }
+          } catch (err) {
+            console.log(`[ESPN_FULL] Error fetching teams for ${league}:`, err);
+          }
+        }
         return { events: [], error: "TEAM_NOT_FOUND" };
       }
 
@@ -547,17 +595,20 @@ export const espnRouter = createTRPCRouter({
       
       for (const seasonYear of seasonsToTry) {
         if (rawEvents.length > 0) break; // Found events, stop trying
-        
         let scheduleUrl: string;
         if (seasonYear === 'default') {
           scheduleUrl = `${ESPN_SITE_BASE}/sports/${cfg.sport}/${cfg.league}/teams/${espnTeamId}/schedule`;
         } else {
           scheduleUrl = `${ESPN_SITE_BASE}/sports/${cfg.sport}/${cfg.league}/teams/${espnTeamId}/schedule?season=${seasonYear}`;
         }
-        
         console.log(`[ESPN_FULL] Trying season ${seasonYear}:`, scheduleUrl);
-        
-        const scheduleRes = await fetchWithTimeout(scheduleUrl, 20000);
+        let scheduleRes = await fetchWithTimeout(scheduleUrl, 20000);
+        if (!(scheduleRes && scheduleRes.ok)) {
+          // Fallback: try Cloudflare Worker proxy
+          const cfUrl = `https://spm-api.nsp-2-repository.workers.dev/proxy?url=${encodeURIComponent(scheduleUrl)}`;
+          console.log(`[ESPN_FULL] Fallback: Trying Cloudflare proxy for season ${seasonYear}:`, cfUrl);
+          scheduleRes = await fetchWithTimeout(cfUrl, 20000);
+        }
         if (scheduleRes && scheduleRes.ok) {
           try {
             const scheduleData = await scheduleRes.json();

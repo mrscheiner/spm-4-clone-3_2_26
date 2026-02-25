@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Start backend (Wrangler Dev)",
+      "type": "node",
+      "request": "launch",
+      "preLaunchTask": "Wrangler Dev",
+      "program": "${workspaceFolder}/node_modules/.bin/wrangler",
+      "cwd": "${workspaceFolder}/backend"
+    },
+    {
+      "name": "Attach to Wrangler",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "restart": true,
+      "cwd": "${workspaceFolder}/backend"
+    }
+  ]
+}

@@ -1,9 +1,9 @@
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Platform } from "react-native";
+import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Platform, FlatList } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { FileText, Plus, Users, RefreshCw, Table, Trash2, Download, Upload, History } from "lucide-react-native";
 import { useRouter } from "expo-router";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, useEffect } from "react";
 import * as Haptics from 'expo-haptics';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -33,7 +33,49 @@ export default function SettingsScreen() {
     backupError,
     backupConfirmationMessage,
     retryBackup,
+    switchSeasonPass,
   } = useSeasonPass();
+  // Horizontal scrollable pass picker (show 2-3 passes at once, debug log on unmount)
+  const renderPassPicker = () => {
+    if (!seasonPasses || seasonPasses.length <= 1) return null;
+    return (
+      <FlatList
+        data={seasonPasses}
+        horizontal
+        keyExtractor={item => item.id}
+        showsHorizontalScrollIndicator={true}
+        contentContainerStyle={{ paddingVertical: 8, paddingHorizontal: 4 }}
+        style={{ marginBottom: 8, maxHeight: 56 }}
+        snapToAlignment="start"
+        decelerationRate="fast"
+        snapToInterval={88} // itemWidth + marginRight
+        renderItem={({ item }) => {
+          const isActive = item.id === activeSeasonPassId;
+          return (
+            <TouchableOpacity
+              onPress={() => switchSeasonPass(item.id)}
+              style={[
+                styles.passPickerItem,
+                isActive && styles.passPickerItemActive
+              ]}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.passPickerText, isActive && styles.passPickerTextActive]} numberOfLines={1} ellipsizeMode="tail">
+                {item.teamAbbreviation || item.teamName || 'Team'}
+              </Text>
+            </TouchableOpacity>
+          );
+        }}
+      />
+    );
+  };
+
+  // Debug: log unmounts
+  useEffect(() => {
+    return () => {
+      console.log('[SettingsScreen] Unmounted');
+    };
+  }, []);
 
   const [isResyncing, setIsResyncing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -264,6 +306,7 @@ export default function SettingsScreen() {
           </LinearGradient>
 
           <View style={styles.section}>
+            {renderPassPicker()}
             <Text style={styles.sectionTitle}>SEASON PASSES</Text>
 
             <TouchableOpacity style={styles.settingCard} onPress={handleAddSeasonPass}>
@@ -710,5 +753,32 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 15,
     fontWeight: '600' as const,
+  },
+  passPickerItem: {
+    backgroundColor: '#F3F4F6',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    minWidth: 72,
+    maxWidth: 88,
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 40,
+  },
+  passPickerItemActive: {
+    backgroundColor: '#2196F3',
+    borderColor: '#1976D2',
+  },
+  passPickerText: {
+    color: '#333',
+    fontWeight: '600',
+    fontSize: 13,
+    maxWidth: 80,
+  },
+  passPickerTextActive: {
+    color: '#fff',
   },
 });
