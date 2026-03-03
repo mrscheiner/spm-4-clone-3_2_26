@@ -4,28 +4,28 @@ import { LinearGradient } from "expo-linear-gradient";
 import { DollarSign, Calendar, Percent, TrendingUp, Clock } from "lucide-react-native";
 import { useMemo } from "react";
 
-import { AppColors } from "@/constants/appColors";
-import { useSeasonPass } from "@/providers/SeasonPassProvider";
-import AppFooter from "@/components/AppFooter";
-import { useAppTheme } from "@/components/AppThemeProvider";
+import { AppColors } from "../../constants/appColors";
+import { useSeasonPass } from "../../providers/SeasonPassProvider";
+import AppFooter from "../../components/AppFooter";
+import { buildGradientFromPass } from "../../constants/teamThemes";
 
 export default function AnalyticsScreen() {
   const { activeSeasonPass, calculateStats } = useSeasonPass();
-  const { theme } = useAppTheme();
-const teamPrimaryColor = theme.primary;
+
   const monthlyRevenue = useMemo(() => {
     const monthOrder = ['Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr'];
     const monthMap: Record<string, number> = {};
     monthOrder.forEach(m => { monthMap[m] = 0; });
 
-    if (!activeSeasonPass) {
+    if (!activeSeasonPass || !activeSeasonPass.salesData) {
       return monthOrder.map(month => ({ month, revenue: 0 }));
     }
 
     const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-    Object.values(activeSeasonPass.salesData).forEach(gameSales => {
-      Object.values(gameSales).forEach(sale => {
+    Object.values(activeSeasonPass.salesData || {}).forEach(gameSales => {
+      if (!gameSales) return;
+      Object.values(gameSales as Record<string, {soldDate?: string; price?: number}>).forEach(sale => {
         if (sale.soldDate && typeof sale.price === 'number') {
           const soldDate = new Date(sale.soldDate);
           const monthKey = monthNames[soldDate.getMonth()];
@@ -40,14 +40,15 @@ const teamPrimaryColor = theme.primary;
   }, [activeSeasonPass]);
 
   const seatPairPerformance = useMemo(() => {
-    if (!activeSeasonPass) return [];
+    if (!activeSeasonPass || !activeSeasonPass.salesData) return [];
 
     return activeSeasonPass.seatPairs.map(pair => {
       let revenue = 0;
       let soldCount = 0; // games sold
       let soldSeats = 0; // seats sold across games
 
-      Object.values(activeSeasonPass.salesData).forEach(gameSales => {
+      Object.values(activeSeasonPass.salesData || {}).forEach(gameSales => {
+        if (!gameSales) return;
         const sale = gameSales[pair.id];
         if (sale && typeof sale.price === 'number') {
           revenue += sale.price;
@@ -74,11 +75,15 @@ const teamPrimaryColor = theme.primary;
   }, [activeSeasonPass]);
 
   const maxRevenue = Math.max(...monthlyRevenue.map(m => m.revenue), 1);
+  const teamPrimaryColor = activeSeasonPass?.teamPrimaryColor || AppColors.primary;
+  const gradientColors = useMemo(() => {
+    return buildGradientFromPass(activeSeasonPass);
+  }, [activeSeasonPass]);
 
   return (
     <View style={styles.wrapper}>
       <LinearGradient
-        colors={[...theme.gradient]}
+        colors={[...gradientColors]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.gradientTop}
@@ -86,7 +91,7 @@ const teamPrimaryColor = theme.primary;
       <SafeAreaView edges={['top']} style={styles.container}>
         <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
           <LinearGradient
-            colors={[...theme.gradient]}
+            colors={[...gradientColors]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={styles.analyticsHeader}
@@ -99,17 +104,17 @@ const teamPrimaryColor = theme.primary;
             <Text style={styles.sectionTitle}>Season Overview</Text>
           <View style={styles.overviewStats}>
             <View style={styles.overviewStat}>
-              <DollarSign size={20} color={theme.accent} />
+              <DollarSign size={20} color={AppColors.accent} />
               <Text style={styles.overviewValue}>${calculateStats.totalRevenue.toFixed(2)}</Text>
               <Text style={styles.overviewLabel}>Total Revenue</Text>
             </View>
             <View style={styles.overviewStat}>
-              <Calendar size={20} color={theme.primary} />
+              <Calendar size={20} color={teamPrimaryColor} />
               <Text style={styles.overviewValue}>{calculateStats.ticketsSold}</Text>
               <Text style={styles.overviewLabel}>Seats Sold</Text>
             </View>
             <View style={styles.overviewStat}>
-              <Percent size={20} color={theme.secondary} />
+              <Percent size={20} color={AppColors.gold} />
               <Text style={styles.overviewValue}>{calculateStats.soldRate.toFixed(0)}%</Text>
               <Text style={styles.overviewLabel}>Sold Rate</Text>
             </View>

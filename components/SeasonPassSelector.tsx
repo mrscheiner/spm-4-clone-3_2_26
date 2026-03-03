@@ -4,9 +4,9 @@ import { Image } from 'expo-image';
 import { ChevronDown, Plus, Check, Pencil, Trash2 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 
-import { AppColors } from '@/constants/appColors';
-import { useSeasonPass } from '@/providers/SeasonPassProvider';
-import { getTeamTheme } from '@/constants/teamThemes';
+import { AppColors } from '../constants/appColors';
+import { useSeasonPass } from '../providers/SeasonPassProvider';
+import { getTeamTheme } from '../constants/teamThemes';
 
 export default function SeasonPassSelector() {
   const router = useRouter();

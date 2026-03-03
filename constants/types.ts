@@ -25,6 +25,11 @@ export interface Game {
   gameNumber?: number | string;
   type: 'Preseason' | 'Regular' | 'Playoff';
   dateTimeISO?: string | null;
+  /**
+   * Provided by the sportsdata proxy; `true` for home games.  Optional
+   * because legacy stored schedules (and some manual fixtures) may omit it.
+   */
+  isHome?: boolean;
 }
 
 export interface Event {
@@ -116,6 +121,14 @@ export interface SeasonPass {
   games: Game[];
   events: Event[];
   createdAtISO: string;
+  // Added for schedule error and counts
+  preCount?: number;
+  regCount?: number;
+  mergedCount?: number;
+  seasonYearChosen?: number;
+  scheduleError?: string;
+  // MLS schedule fetch status - prevents infinite retry loops
+  scheduleFetchStatus?: 'success' | 'failed' | 'pending';
 }
 
 export interface SetupState {

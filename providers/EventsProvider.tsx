@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { StandaloneEvent } from '@/constants/types';
+import { StandaloneEvent } from '../constants/types';
 
 const EVENTS_STORAGE_KEY = 'standalone_events_v1';
 const EVENTS_REWIND_KEY = 'events_rewind_backups_v1';

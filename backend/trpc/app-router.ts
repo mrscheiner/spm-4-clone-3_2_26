@@ -1,12 +1,10 @@
 import { createTRPCRouter } from "./create-context";
-import { espnRouter } from "./routes/espn";
-import { ticketmasterRouter } from "./routes/ticketmaster";
 import { sportsdataRouter } from "./routes/sportsdata";
+import { mlsRouter } from "./routes/mls";
 
 export const appRouter = createTRPCRouter({
-  espn: espnRouter,
-  ticketmaster: ticketmasterRouter,
   sportsdata: sportsdataRouter,
+  mls: mlsRouter,
 });
 
 export type AppRouter = typeof appRouter;

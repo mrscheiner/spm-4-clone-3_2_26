@@ -1,38 +1,43 @@
 import { httpLink } from "@trpc/client";
 import { createTRPCReact } from "@trpc/react-query";
 import superjson from "superjson";
+import Constants from 'expo-constants';
 
-import type { AppRouter } from "@/backend/trpc/app-router";
+import type { AppRouter } from "../backend/trpc/app-router";
 
 export const trpc = createTRPCReact<AppRouter>();
+
+// Hardcoded fallback URL for production
+const FALLBACK_API_URL = 'https://spm-api.nsp-2-repository.workers.dev';
 
 /**
  * Get the base URL for the API.
  * In production (TestFlight/App Store), we MUST NOT crash if the env var is missing.
  */
-const getBaseUrl = (): string => {
+export const getBaseUrl = (): string => {
+  // First check app.json extra config (most reliable in Expo)
   try {
-    const url = process.env.EXPO_PUBLIC_RORK_API_BASE_URL;
-
-    if (url && typeof url === 'string' && url.length > 0) {
-      return url;
+    if (typeof Constants !== 'undefined' && Constants?.expoConfig?.extra?.EXPO_PUBLIC_RORK_API_BASE_URL) {
+      const url = Constants.expoConfig.extra.EXPO_PUBLIC_RORK_API_BASE_URL as string;
+      if (url && typeof url === 'string' && url.length > 0) {
+        console.log('[trpc] using base URL from app config:', url);
+        return url;
+      }
     }
-
-    // In development, log a warning
-    if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      console.warn(
-        '[trpc] EXPO_PUBLIC_RORK_API_BASE_URL is not set — using fallback http://localhost:8787 (dev only)'
-      );
-      return 'http://localhost:8787';
-    }
-
-    // In production, return a safe fallback URL that won't crash the app
-    console.warn('[trpc] EXPO_PUBLIC_RORK_API_BASE_URL is not set in production');
-    return 'https://api.rork.com';
   } catch (e) {
-    console.error('[trpc] Error getting base URL:', e);
-    return 'https://api.rork.com';
+    console.warn('[trpc] Failed to read Constants:', e);
   }
+  
+  // Fallback to environment variable
+  const envUrl = process.env.EXPO_PUBLIC_RORK_API_BASE_URL;
+  if (envUrl && typeof envUrl === 'string' && envUrl.length > 0) {
+    console.log('[trpc] using base URL from env:', envUrl);
+    return envUrl;
+  }
+  
+  // Use hardcoded fallback
+  console.log('[trpc] using hardcoded fallback URL:', FALLBACK_API_URL);
+  return FALLBACK_API_URL;
 };
 
 /**
@@ -40,7 +45,6 @@ const getBaseUrl = (): string => {
  */
 function createTrpcClient(): ReturnType<typeof trpc.createClient> {
   const baseUrl = getBaseUrl();
-  
   return trpc.createClient({
     links: [
       httpLink({

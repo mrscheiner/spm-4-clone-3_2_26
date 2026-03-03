@@ -1,28 +1,115 @@
-import { useState, useCallback, useMemo } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert, Platform } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useState, useCallback, useMemo, useEffect } from 'react';
+import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Alert, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { ChevronLeft, Plus, Trash2, Check, Users, User } from 'lucide-react-native';
 
-import { AppColors } from '@/constants/appColors';
-import { League, Team, SeatPair } from '@/constants/types';
-import { LEAGUES, getTeamsByLeague } from '@/constants/leagues';
-import { useSeasonPass } from '@/providers/SeasonPassProvider';
+import { AppColors } from '../constants/appColors';
+import { League, Team, SeatPair } from '../constants/types';
+import { LEAGUES, getTeamsByLeague } from '../constants/leagues';
+import { useSeasonPass } from '../providers/SeasonPassProvider';
 
-type SetupStep = 'league' | 'team' | 'season' | 'seats' | 'confirm';
+type SetupStep = 'league' | 'team' | 'seats' | 'confirm';
 
 export default function SetupScreen() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
   const { createSeasonPass, seasonPasses } = useSeasonPass();
 
   const [step, setStep] = useState<SetupStep>('league');
   const [selectedLeague, setSelectedLeague] = useState<League | null>(null);
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
-  const [seasonLabel, setSeasonLabel] = useState('2025-2026');
+  const [seasonLabel, setSeasonLabel] = useState('');
+  const [seasonError, setSeasonError] = useState<string | null>(null);
   const [seatPairs, setSeatPairs] = useState<SeatPair[]>([]);
+
+  // helper: determine a human-readable season label based on league and current date
+  const computeSeasonLabel = useCallback((leagueId: string): string => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth(); // 0 = Jan
+    const id = leagueId.toLowerCase();
+
+    // map each league to the month AFTER which we should roll to the "next"
+    // season label. months are 0-indexed (0=Jan, 11=Dec).
+    const boundaryMonth: Record<string, number> = {
+      nhl: 6, // after June (i.e. July) switch to next-year label
+      nba: 6, // same as NHL
+      mlb: 10, // after October (Nov) start next-year label
+      nfl: 2, // after Feb (post-Super Bowl) switch
+      mls: 10, // after October (season typically ends early Nov)
+    };
+
+    const boundary = boundaryMonth[id] ?? 0;
+
+    // leagues spanning two calendar years use `YYYY-YYYY` format
+    if (id === 'nhl' || id === 'nba') {
+      if (month >= boundary) {
+        return `${year}-${year + 1}`;
+      } else {
+        return `${year - 1}-${year}`;
+      }
+    }
+
+    // single-year leagues use just the year, but roll to next once past boundary
+    let labelYear = year;
+    if (month >= boundary) {
+      labelYear = year + 1;
+    }
+    return `${labelYear}`;
+  }, []);
+
+  // quick schedule probe so we can warn the user if no data is yet available
+  const checkSchedule = useCallback(async (league: League, team: Team) => {
+    try {
+      const result = await fetchScheduleWithMasterTimeout({
+        leagueId: league.id,
+        teamId: team.id,
+        teamName: team.name,
+        teamAbbreviation: team.abbreviation,
+      });
+
+      // if backend determined a different season year, update label accordingly
+      if (result.seasonYearChosen != null) {
+        let year = result.seasonYearChosen;
+        let label: string;
+        const id = league.id.toLowerCase();
+        if (id === 'nhl' || id === 'nba') {
+          // two‑year season uses end year
+          label = `${year - 1}-${year}`;
+          // if result came from previous-year search, seasonYearChosen may be lower than computed
+          const now = new Date();
+          const month = now.getMonth();
+          // if today is before our boundary we wanted prev year anyway
+          // nothing extra needed
+        } else {
+          // single year label is just the chosen year
+          label = `${year}`;
+        }
+        setSeasonLabel(label);
+      }
+
+      if (result.error === 'NO_SCHEDULE') {
+        setSeasonError(
+          'No schedule is available for the calculated season yet. Please check back later.'
+        );
+      } else {
+        setSeasonError(null);
+      }
+    } catch (e) {
+      // ignore – schedule fetch errors are handled elsewhere
+      setSeasonError(null);
+    }
+  }, []);
+
+  // when league+team change, auto-populate the season label and probe schedule
+  useEffect(() => {
+    if (selectedLeague && selectedTeam) {
+      const label = computeSeasonLabel(selectedLeague.id);
+      setSeasonLabel(label);
+      checkSchedule(selectedLeague, selectedTeam);
+    }
+  }, [selectedLeague, selectedTeam, computeSeasonLabel, checkSchedule]);
   const [currentSection, setCurrentSection] = useState('');
   const [currentRow, setCurrentRow] = useState('');
   const [currentSeats, setCurrentSeats] = useState('');
@@ -77,10 +164,8 @@ export default function SetupScreen() {
     } else if (step === 'team') {
       setStep('league');
       setSelectedTeam(null);
-    } else if (step === 'season') {
-      setStep('team');
     } else if (step === 'seats') {
-      setStep('season');
+      setStep('team');
     } else if (step === 'confirm') {
       setStep('seats');
     }
@@ -96,14 +181,9 @@ export default function SetupScreen() {
   const handleSelectTeam = useCallback((team: Team) => {
     console.log('[Setup] Selected team:', team.name);
     setSelectedTeam(team);
-    setStep('season');
+    setStep('seats');
   }, []);
 
-  const handleSeasonNext = useCallback(() => {
-    if (seasonLabel.trim()) {
-      setStep('seats');
-    }
-  }, [seasonLabel]);
 
   const handleAddSeatPair = useCallback(() => {
     if (currentSection.trim() && currentRow.trim() && currentSeats.trim()) {
@@ -174,42 +254,40 @@ export default function SetupScreen() {
     setStep('league');
     setSelectedLeague(null);
     setSelectedTeam(null);
-    setSeasonLabel('2025-2026');
+    setSeasonLabel('');
+    setSeasonError(null);
     setSeatPairs([]);
   }, []);
 
   const teams = selectedLeague ? getTeamsByLeague(selectedLeague.id) : [];
 
   const renderLeagueStep = () => (
-    <View style={[styles.stepContainer, styles.leagueContainer]}>
-      <View>
-        <Text style={styles.stepTitle}>Choose Your League</Text>
-        <Text style={styles.stepSubtitle}>Select the league for your season tickets</Text>
-        <View style={styles.leagueGrid}>
-          {LEAGUES.map(league => (
-            <TouchableOpacity
-              key={league.id}
-              style={styles.leagueCard}
-              onPress={() => handleSelectLeague(league)}
-              activeOpacity={0.7}
-            >
-              {league.logoUrl ? (
-                <Image source={{ uri: league.logoUrl }} style={styles.leagueLogo} contentFit="contain" />
-              ) : (
-                <View style={[styles.leagueLogo, styles.logoPlaceholder]} />
-              )}
-              <Text style={styles.leagueName}>{league.shortName}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
-      <View style={styles.leagueFooter}>
-        <Image
-          source={{ uri: 'https://pub-e001eb4506b145aa938b5d3badbff6a5.r2.dev/attachments/4ova8g9grto8ehefm7bwe' }}
-          style={styles.appLogo}
-          contentFit="contain"
+    <View style={styles.stepContainer}>
+      <View style={styles.brandingHeader}>
+        <Image 
+          source={{ uri: 'https://pub-e001eb4506b145aa938b5d3badbff6a5.r2.dev/attachments/4ova8g9grto8ehefm7bwe' }} 
+          style={styles.appLogo} 
+          contentFit="contain" 
         />
+      </View>
+      <Text style={styles.stepTitle}>Choose Your League</Text>
+      <Text style={styles.stepSubtitle}>Select the league for your season tickets</Text>
+      <View style={styles.leagueGrid}>
+        {LEAGUES.map(league => (
+          <TouchableOpacity
+            key={league.id}
+            style={styles.leagueCard}
+            onPress={() => handleSelectLeague(league)}
+            activeOpacity={0.7}
+          >
+            {league.logoUrl ? (
+              <Image source={{ uri: league.logoUrl }} style={styles.leagueLogo} contentFit="contain" />
+            ) : (
+              <View style={[styles.leagueLogo, styles.logoPlaceholder]} />
+            )}
+            <Text style={styles.leagueName}>{league.shortName}</Text>
+          </TouchableOpacity>
+        ))}
       </View>
     </View>
   );
@@ -240,32 +318,18 @@ export default function SetupScreen() {
     </View>
   );
 
-  const renderSeasonStep = () => (
-    <View style={styles.stepContainer}>
-      <Text style={styles.stepTitle}>Season Label</Text>
-      <Text style={styles.stepSubtitle}>Enter the season year (e.g., 2025-2026)</Text>
-      <View style={styles.inputContainer}>
-        <TextInput
-          style={styles.textInput}
-          value={seasonLabel}
-          onChangeText={setSeasonLabel}
-          placeholder="2025-2026"
-          placeholderTextColor={AppColors.textLight}
-        />
-      </View>
-      <TouchableOpacity
-        style={[styles.nextButton, !seasonLabel.trim() && styles.nextButtonDisabled]}
-        onPress={handleSeasonNext}
-        disabled={!seasonLabel.trim()}
-      >
-        <Text style={styles.nextButtonText}>Continue</Text>
-      </TouchableOpacity>
-    </View>
-  );
 
   const renderSeatsStep = () => (
     <View style={styles.stepContainer}>
       <Text style={styles.stepTitle}>Add Your Seats</Text>
+      {seasonLabel ? (
+        <Text style={styles.stepSubtitle}>Season: {seasonLabel}</Text>
+      ) : (
+        <Text style={styles.stepSubtitle}>Determining season…</Text>
+      )}
+      {seasonError ? (
+        <Text style={[styles.stepSubtitle, styles.errorText]}>{seasonError}</Text>
+      ) : null}
       <Text style={styles.stepSubtitle}>Enter your season ticket seat information</Text>
 
       <View style={styles.seatModeSelector}>
@@ -452,28 +516,31 @@ export default function SetupScreen() {
 
   return (
     <View style={styles.wrapper}>
-      <SafeAreaView edges={['top']} style={styles.container}>
-        {canGoBack && (
-          <TouchableOpacity
-            style={[
-              styles.backButton,
-              styles.backButtonAbsolute,
-              { top: insets.top + 8 }
-            ]}
-            onPress={handleBack}
+      <SafeAreaView edges={['top', 'bottom']} style={styles.container}>
+        <KeyboardAvoidingView 
+          style={styles.keyboardAvoid} 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+        >
+          <ScrollView 
+            style={styles.scrollView} 
+            showsVerticalScrollIndicator={false} 
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
           >
+          {step === 'league' && renderLeagueStep()}
+          {step === 'team' && renderTeamStep()}
+          {step === 'seats' && renderSeatsStep()}
+          {step === 'confirm' && renderConfirmStep()}
+          </ScrollView>
+        </KeyboardAvoidingView>
+
+        {canGoBack && (
+          <TouchableOpacity style={styles.backButton} onPress={handleBack}>
             <ChevronLeft size={24} color={AppColors.white} />
             <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
         )}
-
-        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-          {step === 'league' && renderLeagueStep()}
-          {step === 'team' && renderTeamStep()}
-          {step === 'season' && renderSeasonStep()}
-          {step === 'seats' && renderSeatsStep()}
-          {step === 'confirm' && renderConfirmStep()}
-        </ScrollView>
       </SafeAreaView>
     </View>
   );
@@ -488,23 +555,29 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: AppColors.background,
   },
+  keyboardAvoid: {
+    flex: 1,
+  },
   backButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: AppColors.primary,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  backButtonAbsolute: {
-    position: 'absolute',
-    right: 16,
-    zIndex: 10,
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
   },
   backText: {
-    color: AppColors.white,
-    fontSize: 16,
-    fontWeight: '600',
+    color: AppColors.textSecondary,
+    fontSize: 14,
+    fontWeight: '500',
     marginLeft: 4,
+  },
+  errorText: {
+    fontSize: 16,
+    fontWeight: '600' as const,
+    color: AppColors.textPrimary,
+    marginVertical: 8,
   },
   scrollView: {
     flex: 1,
@@ -514,14 +587,6 @@ const styles = StyleSheet.create({
   },
   stepContainer: {
     padding: 20,
-  },
-  leagueContainer: {
-    flex: 1,
-    justifyContent: 'flex-start',
-  },
-  leagueFooter: {
-    alignItems: 'center',
-    marginTop: 24,
   },
   stepTitle: {
     fontSize: 28,
@@ -807,16 +872,20 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: AppColors.gray,
+    gap: 8,
   },
   confirmSeatText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
     color: AppColors.textPrimary,
+    flex: 1,
+    flexShrink: 1,
   },
   confirmSeatCost: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
     color: AppColors.accent,
+    flexShrink: 0,
   },
   confirmButtons: {
     flexDirection: 'row',

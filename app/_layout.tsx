@@ -1,15 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"; 
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { Component, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Dimensions, Platform, Text, TextInput, View, StyleSheet } from "react-native";
+import React, { Component, useEffect, useMemo, useState, useRef } from "react";
+import { ActivityIndicator, Dimensions, Platform, Text, TextInput, View, StyleSheet, Animated, Easing, Image } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { SeasonPassProvider } from "@/providers/SeasonPassProvider";
+import { SeasonPassProvider } from "../providers/SeasonPassProvider";
 import { AppThemeProvider } from "../components/AppThemeProvider";
 import { getTeamTheme } from "../constants/teamThemes";
-import { EventsProvider } from "@/providers/EventsProvider";
-import { trpc, trpcClient } from "@/lib/trpc";
-import { checkAndSeedCanonicalData } from "@/lib/canonicalBootstrap";
+import { EventsProvider } from "../providers/EventsProvider";
+import { trpc, trpcClient } from "../lib/trpc";
+import { checkAndSeedCanonicalData } from "../lib/canonicalBootstrap";
 
 // Safely prevent auto hide - wrap in try/catch for production safety
 try {
@@ -166,6 +166,7 @@ function RootLayoutNav() {
 export default function RootLayout() {
   const [isBootstrapped, setIsBootstrapped] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<Error | null>(null);
+  const rotation = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     (async () => {
@@ -187,6 +188,23 @@ export default function RootLayout() {
       }
     })();
   }, []);
+
+  // spin logo while the app is bootstrapping
+  useEffect(() => {
+    if (!isBootstrapped) {
+      rotation.setValue(0);
+      Animated.loop(
+        Animated.timing(rotation, {
+          toValue: 1,
+          duration: 1000,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        })
+      ).start();
+    } else {
+      rotation.stopAnimation();
+    }
+  }, [isBootstrapped, rotation]);
 
   const rootViewStyle = useMemo(() => {
     try {
@@ -213,7 +231,24 @@ export default function RootLayout() {
   if (!isBootstrapped) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F5F7' }}>
-        <ActivityIndicator size="large" color="#002B5C" />
+        <Animated.View
+          style={{
+            transform: [
+              {
+                rotate: rotation.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ['0deg', '360deg'],
+                }),
+              },
+            ],
+          }}
+        >
+          <Image
+            source={require('../assets/images/seasonpass-logo.png')}
+            style={{ width: 100, height: 100 }}
+            resizeMode="contain"
+          />
+        </Animated.View>
       </View>
     );
   }

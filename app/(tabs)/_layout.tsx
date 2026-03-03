@@ -1,11 +1,11 @@
 import { Tabs, useRouter } from "expo-router";
-import { Home, Calendar, TrendingUp, Ticket, Settings, CheckCircle, AlertCircle } from "lucide-react-native";
+import { Home, Calendar, TrendingUp, Ticket, Settings, CheckCircle, AlertCircle, Table } from "lucide-react-native";
 import React, { useEffect, useRef } from "react";
-import { View, ActivityIndicator, StyleSheet, Text, Platform, Animated } from "react-native";
+import { View, ActivityIndicator, StyleSheet, Text, Platform, Animated, Easing, Image } from "react-native";
 
-import { AppColors } from "@/constants/appColors";
+import { AppColors } from "../../constants/appColors";
 import { useAppTheme } from "../../components/AppThemeProvider";
-import { useSeasonPass } from "@/providers/SeasonPassProvider";
+import { useSeasonPass } from "../../providers/SeasonPassProvider";
 
 export default function TabLayout() {
   const { theme } = useAppTheme();
@@ -13,6 +13,8 @@ export default function TabLayout() {
   const { isLoading, needsSetup, activeSeasonPass, backupConfirmationMessage, lastBackupStatus, lastBackupTime } = useSeasonPass();
   console.log('[TabLayout] render - isLoading:', isLoading, 'needsSetup:', needsSetup, 'activePass:', activeSeasonPass?.teamName);
   const toastOpacity = useRef(new Animated.Value(0)).current;
+  const rotation = useRef(new Animated.Value(0)).current;
+  const [showInitialAnimation, setShowInitialAnimation] = React.useState(true);
 
   useEffect(() => {
     if (!isLoading && needsSetup) {
@@ -39,6 +41,29 @@ export default function TabLayout() {
       ]).start();
     }
   }, [backupConfirmationMessage, toastOpacity]);
+
+  // hide the initial animation flag after a short delay so the logo spins at least momentarily
+  useEffect(() => {
+    const t = setTimeout(() => setShowInitialAnimation(false), 500);
+    return () => clearTimeout(t);
+  }, []);
+
+  // spin logo while app is loading
+  useEffect(() => {
+    if (isLoading || showInitialAnimation) {
+      rotation.setValue(0);
+      Animated.loop(
+        Animated.timing(rotation, {
+          toValue: 1,
+          duration: 1000,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        })
+      ).start();
+    } else {
+      rotation.stopAnimation();
+    }
+  }, [isLoading, showInitialAnimation, rotation]);
 
   const shouldShowToast = !!backupConfirmationMessage && !!lastBackupStatus;
   const BackupToast = shouldShowToast ? (
@@ -79,6 +104,19 @@ export default function TabLayout() {
         </View>
       )}
       <View style={{ flex: 1 }}>
+        {(isLoading || showInitialAnimation) && (
+          <Animated.View
+            style={[
+              styles.loadingOverlay,
+              { transform: [{ rotate: rotation.interpolate({ inputRange: [0, 1], outputRange: ['0deg','360deg'] }) }] },
+            ]}
+          >
+            <Image
+              source={require("../../assets/images/seasonpass-logo.png")}
+              style={styles.loadingLogo}
+            />
+          </Animated.View>
+        )}
         <Tabs screenOptions={{ headerShown: false }}>
           <Tabs.Screen
             name="index"
@@ -91,7 +129,7 @@ export default function TabLayout() {
             name="schedule"
             options={{
               title: "Schedule",
-              tabBarIcon: ({ color, size }) => <Calendar color={color} size={size} />, 
+              tabBarIcon: ({ color, size }) => <Table color={color} size={size} />, 
             }}
           />
           <Tabs.Screen
@@ -171,6 +209,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600' as const,
     color: '#FFFFFF',
+  },
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.8)',
+    zIndex: 9999,
+  },
+  loadingLogo: {
+    width: 120,
+    height: 120,
+    resizeMode: 'contain',
   },
   backupToastTime: {
     fontSize: 12,

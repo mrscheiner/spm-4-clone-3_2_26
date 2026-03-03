@@ -5,13 +5,14 @@ import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useMemo, useState, useCallback } from "react";
 
-import { AppColors } from "@/constants/appColors";
-import { APP_VERSION } from "@/constants/appVersion";
-import { useSeasonPass } from "@/providers/SeasonPassProvider";
-import SeasonPassSelector from "@/components/SeasonPassSelector";
-import { NHL_TEAMS } from "@/constants/leagues";
-import AppFooter from "@/components/AppFooter";
-import { buildGradientFromPass } from "@/constants/teamThemes";
+import { AppColors } from "../../constants/appColors";
+import { APP_VERSION } from "../../constants/appVersion";
+import { useSeasonPass } from "../../providers/SeasonPassProvider";
+import SeasonPassSelector from "../../components/SeasonPassSelector";
+import { NHL_TEAMS, getTeamsByLeague } from "../../constants/leagues";
+import { normalizeOpponentName, getOpponentLogo as sharedGetOpponentLogo } from "../../src/utils/opponent";
+import AppFooter from "../../components/AppFooter";
+import { buildGradientFromPass } from "../../constants/teamThemes";
 
 const TEAM_ALIASES: Record<string, string> = {
   'blackhawks': 'chi',
@@ -92,48 +93,12 @@ const TEAM_ALIASES: Record<string, string> = {
   'anaheim': 'ana',
 };
 
-function getOpponentLogo(opponentName: string, storedLogo?: string): string | undefined {
-  if (!opponentName) return storedLogo;
-  const cleanName = opponentName.replace(/^vs\s+/i, '').trim().toLowerCase();
-  
-  // Check aliases first
-  const aliasId = TEAM_ALIASES[cleanName];
-  if (aliasId) {
-    const team = NHL_TEAMS.find(t => t.id === aliasId);
-    if (team) return team.logoUrl;
-  }
-  
-  // Check each word against aliases
-  const words = cleanName.split(/\s+/);
-  for (const word of words) {
-    const wordAliasId = TEAM_ALIASES[word];
-    if (wordAliasId) {
-      const team = NHL_TEAMS.find(t => t.id === wordAliasId);
-      if (team) return team.logoUrl;
-    }
-  }
-  
-  // Try exact name match
-  let team = NHL_TEAMS.find(t => t.name.toLowerCase() === cleanName);
-  if (team) return team.logoUrl;
-  
-  // Try matching by team nickname (last word)
-  team = NHL_TEAMS.find(t => {
-    const teamNickname = t.name.toLowerCase().split(' ').pop() || '';
-    return cleanName.includes(teamNickname) || teamNickname.includes(cleanName);
-  });
-  if (team) return team.logoUrl;
-  
-  // Try matching by city
-  team = NHL_TEAMS.find(t => {
-    const cityLower = t.city.toLowerCase();
-    return cleanName.includes(cityLower) || cityLower.includes(cleanName);
-  });
-  if (team) return team.logoUrl;
-  
-  // Last resort: use stored logo
-  return storedLogo;
-}
+// reuse the same league-specific alias structure as schedule.tsx
+const LEAGUE_ALIASES: Record<string, Record<string,string>> = {
+  nhl: TEAM_ALIASES as any as Record<string,string>,
+};
+
+const getOpponentLogo = sharedGetOpponentLogo;
 
 export default function DashboardScreen() {
   const { activeSeasonPass, calculateStats } = useSeasonPass();
@@ -141,7 +106,7 @@ export default function DashboardScreen() {
 
   // Group sales by game, sorted by game date (most recent first)
   const groupedSales = useMemo(() => {
-    if (!activeSeasonPass) return [];
+    if (!activeSeasonPass || !activeSeasonPass.salesData) return [];
     
     const gameGroups: {
       gameId: string;
@@ -163,11 +128,11 @@ export default function DashboardScreen() {
       totalPrice: number;
     }[] = [];
 
-    Object.entries(activeSeasonPass.salesData).forEach(([gameId, gameSales]) => {
+    Object.entries(activeSeasonPass.salesData || {}).forEach(([gameId, gameSales]) => {
       const game = (activeSeasonPass.games || []).find(g => g.id === gameId);
       // Don't skip sales if game not found - show them with fallback info
       
-      const salesList = Object.values(gameSales).map(sale => {
+      const salesList = Object.values(gameSales || {}).map((sale: any) => {
         const soldDateObj = new Date(sale.soldDate);
         const soldDateFormatted = soldDateObj.toLocaleDateString('en-US', {
           month: 'short',
@@ -189,11 +154,11 @@ export default function DashboardScreen() {
       const totalPrice = salesList.reduce((sum, s) => sum + s.price, 0);
       
       // Get game info with fallbacks
-      const opponentName = game?.opponent?.replace(/^vs\s+/, '') || 'Unknown';
+      const opponentName = normalizeOpponentName(game?.opponent?.replace(/^vs\s+/, '') || 'Unknown', activeSeasonPass?.leagueId);
       const gameNumberDisplay = game?.gameNumber?.toString() || gameId;
       
       // Always try ESPN CDN logos first, then fall back to stored logo
-      const opponentLogo = getOpponentLogo(opponentName, game?.opponentLogo);
+      const opponentLogo = getOpponentLogo(opponentName, game?.opponentLogo, activeSeasonPass?.leagueId);
       
       gameGroups.push({
         gameId,

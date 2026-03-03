@@ -1,4 +1,4 @@
-import { Sale, Game, Event, MonthlyRevenue } from '@/constants/types';
+import { Sale, Game, Event, MonthlyRevenue } from '../constants/types';
 
 export const mockSales: Sale[] = [];
 

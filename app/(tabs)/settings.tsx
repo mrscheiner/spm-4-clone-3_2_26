@@ -1,18 +1,18 @@
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Platform, FlatList } from "react-native";
+import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Platform } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
-import { FileText, Plus, Users, RefreshCw, Table, Trash2, Download, Upload, History } from "lucide-react-native";
+import { FileText, Plus, Users, Table, Trash2, Download, Upload, History } from "lucide-react-native";
 import { useRouter } from "expo-router";
-import { useCallback, useRef, useState, useEffect } from "react";
+import { useCallback, useRef, useState } from "react";
 import * as Haptics from 'expo-haptics';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 
-import { AppColors } from "@/constants/appColors";
-import { useSeasonPass } from "@/providers/SeasonPassProvider";
-import { APP_VERSION } from "@/constants/appVersion";
+import { AppColors } from "../../constants/appColors";
+import { useSeasonPass } from "../../providers/SeasonPassProvider";
+import { APP_VERSION } from "../../constants/appVersion";
 import { Image } from 'expo-image';
-import { buildGradientFromPass } from "@/constants/teamThemes";
+import { buildGradientFromPass } from "../../constants/teamThemes";
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -21,107 +21,19 @@ export default function SettingsScreen() {
     activeSeasonPass,
     deleteSeasonPass,
     activeSeasonPassId,
-    resyncSchedule,
-    isLoadingSchedule,
-    lastScheduleError,
     exportAsJSON,
     exportAsCSV,
     importFromJSONBackup,
     importFromCSVBackup,
-    lastBackupTime,
-    lastBackupStatus,
-    backupError,
-    backupConfirmationMessage,
     retryBackup,
-    switchSeasonPass,
   } = useSeasonPass();
-  // Horizontal scrollable pass picker (show 2-3 passes at once, debug log on unmount)
-  const renderPassPicker = () => {
-    if (!seasonPasses || seasonPasses.length <= 1) return null;
-    return (
-      <FlatList
-        data={seasonPasses}
-        horizontal
-        keyExtractor={item => item.id}
-        showsHorizontalScrollIndicator={true}
-        contentContainerStyle={{ paddingVertical: 8, paddingHorizontal: 4 }}
-        style={{ marginBottom: 8, maxHeight: 56 }}
-        snapToAlignment="start"
-        decelerationRate="fast"
-        snapToInterval={88} // itemWidth + marginRight
-        renderItem={({ item }) => {
-          const isActive = item.id === activeSeasonPassId;
-          return (
-            <TouchableOpacity
-              onPress={() => switchSeasonPass(item.id)}
-              style={[
-                styles.passPickerItem,
-                isActive && styles.passPickerItemActive
-              ]}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.passPickerText, isActive && styles.passPickerTextActive]} numberOfLines={1} ellipsizeMode="tail">
-                {item.teamAbbreviation || item.teamName || 'Team'}
-              </Text>
-            </TouchableOpacity>
-          );
-        }}
-      />
-    );
-  };
 
-  // Debug: log unmounts
-  useEffect(() => {
-    return () => {
-      console.log('[SettingsScreen] Unmounted');
-    };
-  }, []);
-
-  const [isResyncing, setIsResyncing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-  const [isRetryingBackup, setIsRetryingBackup] = useState(false);
 
   const handleAddSeasonPass = useCallback(() => {
     router.push('/setup' as any);
   }, [router]);
-
-  const handleResyncSchedule = useCallback(async () => {
-    if (!activeSeasonPassId || isResyncing) return;
-
-    Alert.alert(
-      'Resync Schedule',
-      `This will refresh the HOME game schedule for ${activeSeasonPass?.teamName}. Your sales data will be preserved.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Resync',
-          onPress: async () => {
-            setIsResyncing(true);
-            const timeoutPromise = new Promise<{ success: boolean; error?: string }>((resolve) => {
-              setTimeout(() => resolve({ success: false, error: 'Request timed out. Please try again.' }), 30000);
-            });
-            try {
-              try { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); } catch { /* ignore */ }
-              const result = await Promise.race([resyncSchedule(activeSeasonPassId), timeoutPromise]);
-              if (result.success) {
-                try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch { /* ignore */ }
-                Alert.alert('Success', 'Schedule has been refreshed.');
-              } else {
-                try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error); } catch { /* ignore */ }
-                Alert.alert('Schedule Unavailable', result.error || 'Could not refresh schedule. Please try again later.');
-              }
-            } catch (error) {
-              console.error('[Settings] Resync error:', error);
-              Alert.alert('Error', 'Failed to refresh schedule. Please try again.');
-            } finally {
-              setIsResyncing(false);
-            }
-          },
-        },
-      ],
-    );
-  }, [activeSeasonPassId, activeSeasonPass, resyncSchedule, isResyncing]);
 
   const handleDeleteCurrentPass = useCallback(async () => {
     if (!activeSeasonPass || !activeSeasonPassId) return;
@@ -262,24 +174,7 @@ export default function SettingsScreen() {
     }
   }, [activeSeasonPassId, importFromCSVBackup]);
 
-  const handleRetryBackup = useCallback(async () => {
-    setIsRetryingBackup(true);
-    try {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      const result = await retryBackup();
-      if (result.success) {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      } else {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        Alert.alert('Backup Failed', result.error || 'Could not save backup. Please try again.');
-      }
-    } catch (error) {
-      console.error('[Settings] Retry backup error:', error);
-      Alert.alert('Error', 'Failed to retry backup.');
-    } finally {
-      setIsRetryingBackup(false);
-    }
-  }, [retryBackup]);
+
 
   const gradientColors = buildGradientFromPass(activeSeasonPass);
 
@@ -306,7 +201,6 @@ export default function SettingsScreen() {
           </LinearGradient>
 
           <View style={styles.section}>
-            {renderPassPicker()}
             <Text style={styles.sectionTitle}>SEASON PASSES</Text>
 
             <TouchableOpacity style={styles.settingCard} onPress={handleAddSeasonPass}>
@@ -331,42 +225,6 @@ export default function SettingsScreen() {
               </View>
             </View>
 
-            {activeSeasonPass && (
-              <>
-                <TouchableOpacity
-                  style={[
-                    styles.settingCard,
-                    (isResyncing || isLoadingSchedule) && styles.settingCardDisabled,
-                  ]}
-                  onPress={handleResyncSchedule}
-                  disabled={isResyncing || isLoadingSchedule}
-                >
-                  <View style={[styles.iconContainer, { backgroundColor: '#FFF3E0' }]}>
-                    {isResyncing || isLoadingSchedule ? (
-                      <ActivityIndicator size="small" color="#FF9800" />
-                    ) : (
-                      <RefreshCw size={24} color="#FF9800" />
-                    )}
-                  </View>
-                  <View style={styles.settingContent}>
-                    <Text style={styles.settingTitle}>
-                      Resync {activeSeasonPass.teamName} Schedule
-                    </Text>
-                    <Text style={styles.settingDescription}>
-                      {isResyncing
-                        ? `Refreshing ${activeSeasonPass.teamName} schedule...`
-                        : 'Refresh HOME game schedule'}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-
-                {!!lastScheduleError && !isResyncing && !isLoadingSchedule && (
-                  <View style={styles.errorBanner}>
-                    <Text style={styles.errorBannerText}>{lastScheduleError}</Text>
-                  </View>
-                )}
-              </>
-            )}
           </View>
 
           {/* ============ SIMPLIFIED BACKUP/RESTORE ============ */}
@@ -501,11 +359,6 @@ export default function SettingsScreen() {
 
         </ScrollView>
 
-        {!!backupConfirmationMessage && (
-          <View style={styles.backupToast}>
-            <Text style={styles.backupToastText}>{backupConfirmationMessage}</Text>
-          </View>
-        )}
 
         <View style={styles.versionContainer}>
           <Image
@@ -753,32 +606,5 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 15,
     fontWeight: '600' as const,
-  },
-  passPickerItem: {
-    backgroundColor: '#F3F4F6',
-    borderRadius: 14,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginRight: 8,
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-    minWidth: 72,
-    maxWidth: 88,
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 40,
-  },
-  passPickerItemActive: {
-    backgroundColor: '#2196F3',
-    borderColor: '#1976D2',
-  },
-  passPickerText: {
-    color: '#333',
-    fontWeight: '600',
-    fontSize: 13,
-    maxWidth: 80,
-  },
-  passPickerTextActive: {
-    color: '#fff',
   },
 });

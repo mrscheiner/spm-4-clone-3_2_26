@@ -98,8 +98,8 @@ Because the key is public and encoded into the client bundle, you can safely
 hard‑code it or commit it if you prefer, but that’s not necessary for the
 app to function.
 
-No other API keys are required; you can now safely ignore any Ticketmaster
-credentials.
+No other API keys are required; schedules come only from Sportsdata.  Any
+references to Ticketmaster or ESPN in older documentation can be ignored.
 **When do you need Custom Development Builds?**
 
 - Native authentication (Face ID, Touch ID, Apple Sign In)
@@ -312,6 +312,24 @@ For mobile apps, you'll configure your app's deep linking scheme in `app.json`.
 ## Troubleshooting
 
 ### **App not loading on device?**
+
+1. Make sure your phone and computer are on the same WiFi network
+
+## Backend development
+
+To avoid the “network” error when loading schedules you must either:
+
+- Run the backend locally and set `EXPO_PUBLIC_RORK_API_BASE_URL` to its address
+  (e.g. `http://<your‑ip>:8787`) in `.env.local`, or
+- Point the env var at the deployed worker (`https://spm-api.nsp-2-repository.workers.dev`), which is the default.
+
+Start the local server with:
+
+```bash
+cd backend && npx wrangler dev
+```
+
+Once the proxy is reachable the app will fetch schedules normally.
 
 1. Make sure your phone and computer are on the same WiFi network
 2. Try using tunnel mode: `bun start -- --tunnel`

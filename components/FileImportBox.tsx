@@ -13,7 +13,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Haptics from 'expo-haptics';
 import { Upload, FileSpreadsheet, Check, AlertTriangle } from 'lucide-react-native';
-import { AppColors } from '@/constants/appColors';
+import { AppColors } from '../constants/appColors';
 
 type TicketRow = {
   totalPrice: number;
@@ -168,6 +168,7 @@ function parseJSONContent(text: string): TicketRow[] {
       for (const sp of data.seasonPasses) {
         if (sp.salesData && typeof sp.salesData === 'object') {
           for (const [, gameSales] of Object.entries(sp.salesData as Record<string, Record<string, any>>)) {
+            if (!gameSales) continue;
             for (const [, sale] of Object.entries(gameSales as Record<string, any>)) {
               if (sale && typeof sale === 'object' && sale.price != null) {
                 const seatNums: number[] = [];

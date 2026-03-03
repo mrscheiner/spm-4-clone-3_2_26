@@ -1,7 +1,11 @@
 name = "spm-api"
-main = "worker.ts"
-compatibility_date = "2024-01-01"
+account_id = "243fe5a25835bb0c260e39a58ee47cb4"
+compatibility_date = "2026-02-19"
 
+
+# Specify the entry point for the worker
+
+main = "worker.ts"
 
 [vars]
-SPORTSDATAIO_KEY = "9b42211a91c1440795cd6217baa9e334"
+SPORTSDATAIO_API_KEY = "9b42211a91c1440795cd6217baa9e334"

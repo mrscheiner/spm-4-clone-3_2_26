@@ -13,9 +13,9 @@ import { History, RotateCcw, Clock, Database, ChevronRight, ChevronLeft, Ticket 
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 
-import { useSeasonPass, RewindBackup } from '@/providers/SeasonPassProvider';
-import { useEvents, EventsRewindBackup } from '@/providers/EventsProvider';
-import { AppColors } from '@/constants/appColors';
+import { useSeasonPass, RewindBackup } from '../providers/SeasonPassProvider';
+import { useEvents, EventsRewindBackup } from '../providers/EventsProvider';
+import { AppColors } from '../constants/appColors';
 
 type CombinedBackup = {
   type: 'seasonpass' | 'events';

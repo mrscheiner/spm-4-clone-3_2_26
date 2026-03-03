@@ -1,140 +1,21 @@
-import { StyleSheet, Text, View, ScrollView, TextInput, TouchableOpacity, Modal, KeyboardAvoidingView, Platform, Animated, AccessibilityInfo } from "react-native";
+import { StyleSheet, Text, View, ScrollView, TextInput, TouchableOpacity, Modal, KeyboardAvoidingView, Platform, Animated, AccessibilityInfo, ActivityIndicator, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Search, X, Check, DollarSign } from "lucide-react-native";
+import { Search, X, Check, DollarSign, RefreshCw } from "lucide-react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import * as Haptics from 'expo-haptics';
 
-import { AppColors } from "@/constants/appColors";
-import { useSeasonPass } from "@/providers/SeasonPassProvider";
-import { Game, SaleRecord, SeatPair } from "@/constants/types";
-import { parseSeatsCount } from '@/lib/seats';
-import { NHL_TEAMS } from "@/constants/leagues";
-import AppFooter from "@/components/AppFooter";
-import { buildGradientFromPass } from "@/constants/teamThemes";
+import { AppColors } from "../../constants/appColors";
+import { useSeasonPass } from "../../providers/SeasonPassProvider";
+import { Game, SaleRecord, SeatPair } from "../../constants/types";
+import { parseSeatsCount } from '../../lib/seats';
+import { normalizeOpponentName, getOpponentLogo } from "../../src/utils/opponent";
+import { getScheduleErrorMessage } from "../../src/utils/scheduleErrorMessage";
+import AppFooter from "../../components/AppFooter";
+import { buildGradientFromPass } from "../../constants/teamThemes";
 
-const TEAM_ALIASES: Record<string, string> = {
-  'blackhawks': 'chi',
-  'chicago': 'chi',
-  'flyers': 'phi',
-  'philadelphia': 'phi',
-  'hurricanes': 'car',
-  'carolina': 'car',
-  'capitals': 'wsh',
-  'washington': 'wsh',
-  'caps': 'wsh',
-  'lightning': 'tbl',
-  'tampa': 'tbl',
-  'tampa bay': 'tbl',
-  'kings': 'lak',
-  'la kings': 'lak',
-  'los angeles': 'lak',
-  'la': 'lak',
-  'bruins': 'bos',
-  'boston': 'bos',
-  'utah': 'ari',
-  'mammoth': 'ari',
-  'utah mammoth': 'ari',
-  'utah hockey club': 'ari',
-  'panthers': 'fla',
-  'florida': 'fla',
-  'maple leafs': 'tor',
-  'leafs': 'tor',
-  'toronto': 'tor',
-  'rangers': 'nyr',
-  'islanders': 'nyi',
-  'devils': 'njd',
-  'sabres': 'buf',
-  'buffalo': 'buf',
-  'senators': 'ott',
-  'ottawa': 'ott',
-  'canadiens': 'mtl',
-  'montreal': 'mtl',
-  'habs': 'mtl',
-  'penguins': 'pit',
-  'pittsburgh': 'pit',
-  'pens': 'pit',
-  'blue jackets': 'cbj',
-  'columbus': 'cbj',
-  'red wings': 'det',
-  'detroit': 'det',
-  'predators': 'nsh',
-  'nashville': 'nsh',
-  'preds': 'nsh',
-  'jets': 'wpg',
-  'winnipeg': 'wpg',
-  'wild': 'min',
-  'minnesota': 'min',
-  'blues': 'stl',
-  'st. louis': 'stl',
-  'st louis': 'stl',
-  'stars': 'dal',
-  'dallas': 'dal',
-  'avalanche': 'col',
-  'colorado': 'col',
-  'avs': 'col',
-  'coyotes': 'ari',
-  'arizona': 'ari',
-  'flames': 'cgy',
-  'calgary': 'cgy',
-  'oilers': 'edm',
-  'edmonton': 'edm',
-  'canucks': 'van',
-  'vancouver': 'van',
-  'golden knights': 'vgk',
-  'knights': 'vgk',
-  'vegas': 'vgk',
-  'kraken': 'sea',
-  'seattle': 'sea',
-  'sharks': 'sjs',
-  'san jose': 'sjs',
-  'ducks': 'ana',
-  'anaheim': 'ana',
-};
 
-function getOpponentLogo(opponentName: string, storedLogo?: string): string | undefined {
-  if (!opponentName) return storedLogo;
-  const cleanName = opponentName.replace(/^vs\s+/i, '').trim().toLowerCase();
-  
-  // Check aliases first - ESPN CDN logos are more reliable
-  const aliasId = TEAM_ALIASES[cleanName];
-  if (aliasId) {
-    const team = NHL_TEAMS.find(t => t.id === aliasId);
-    if (team) return team.logoUrl;
-  }
-  
-  // Check each word against aliases
-  const words = cleanName.split(/\s+/);
-  for (const word of words) {
-    const wordAliasId = TEAM_ALIASES[word];
-    if (wordAliasId) {
-      const team = NHL_TEAMS.find(t => t.id === wordAliasId);
-      if (team) return team.logoUrl;
-    }
-  }
-  
-  // Try exact name match
-  let team = NHL_TEAMS.find(t => t.name.toLowerCase() === cleanName);
-  if (team) return team.logoUrl;
-  
-  // Try matching by team nickname (last word)
-  team = NHL_TEAMS.find(t => {
-    const teamNickname = t.name.toLowerCase().split(' ').pop() || '';
-    return cleanName.includes(teamNickname) || teamNickname.includes(cleanName);
-  });
-  if (team) return team.logoUrl;
-  
-  // Try matching by city
-  team = NHL_TEAMS.find(t => {
-    const cityLower = t.city.toLowerCase();
-    return cleanName.includes(cityLower) || cityLower.includes(cleanName);
-  });
-  if (team) return team.logoUrl;
-  
-  // Last resort: use stored logo
-  return storedLogo;
-}
 
 interface StatusBadgeProps {
   isPaid: boolean;
@@ -246,12 +127,14 @@ interface ComputedGame extends Game {
   ticketsSold: number;
   ticketsAvailable: number;
   allPaid: boolean;
+  opponentDisplay?: string;
 }
 
 export default function ScheduleScreen() {
-  const { activeSeasonPass, addSaleRecord, removeSaleRecord } = useSeasonPass();
+  const { activeSeasonPass, addSaleRecord, removeSaleRecord, resyncSchedule, isLoadingSchedule } = useSeasonPass();
   const [selectedFilter, setSelectedFilter] = useState<string>('All Games');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isResyncingSchedule, setIsResyncingSchedule] = useState(false);
   
   // Create a stable hash of salesData to trigger recalculation when sales change
   const salesDataHash = useMemo(() => {
@@ -268,6 +151,42 @@ export default function ScheduleScreen() {
   }, [activeSeasonPass?.games]);
   const [editingPrices, setEditingPrices] = useState<Record<string, string>>({});
   const [editingStatuses, setEditingStatuses] = useState<Record<string, 'Pending' | 'Paid'>>({});
+
+  const handleResyncSchedule = useCallback(async () => {
+    if (!activeSeasonPass?.id || isResyncingSchedule || isLoadingSchedule) return;
+    Alert.alert(
+      'Resync Schedule',
+      `This will refresh the HOME game schedule for ${activeSeasonPass?.teamName}. Your sales data will be preserved.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Resync',
+          onPress: async () => {
+            setIsResyncingSchedule(true);
+            const timeoutPromise = new Promise<{ success: boolean; error?: string }>((resolve) => {
+              setTimeout(() => resolve({ success: false, error: 'Request timed out. Please try again.' }), 30000);
+            });
+            try {
+              try { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); } catch { }
+              const result = await Promise.race([resyncSchedule(activeSeasonPass.id), timeoutPromise]);
+              if (result.success) {
+                try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch { }
+                Alert.alert('Success', 'Schedule has been refreshed.');
+              } else {
+                try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error); } catch { }
+                Alert.alert('Schedule Unavailable', result.error || 'Could not refresh schedule. Please try again later.');
+              }
+            } catch (error) {
+              console.error('[Schedule] Resync error:', error);
+              Alert.alert('Error', 'Failed to refresh schedule. Please try again.');
+            } finally {
+              setIsResyncingSchedule(false);
+            }
+          },
+        },
+      ],
+    );
+  }, [activeSeasonPass, resyncSchedule, isResyncingSchedule, isLoadingSchedule]);
 
   const duplicateGames = useMemo(() => {
     const dups: Game[] = [];
@@ -299,7 +218,7 @@ export default function ScheduleScreen() {
       const gameDate = game.dateTimeISO ? new Date(game.dateTimeISO).getTime() : new Date(game.date).getTime();
       const isPast = gameDate < now;
       
-      const pairsForGame = activeSeasonPass.salesData[game.id] || {};
+      const pairsForGame = (activeSeasonPass.salesData || {})[game.id] || {};
       const salesCount = Object.keys(pairsForGame).length;
       
       const ticketsSold = Object.values(pairsForGame).reduce((acc, sale) => {
@@ -320,8 +239,12 @@ export default function ScheduleScreen() {
         return sale && (sale.paymentStatus === 'Paid' || sale.paymentStatus.toLowerCase() === 'paid');
       });
       
+      // human-friendly opponent name: normalize to full team name if possible
+      const opponentDisplay = normalizeOpponentName(game.opponent || '', activeSeasonPass.leagueId);
+
       return {
         ...game,
+        opponentDisplay,
         isPast,
         ticketsTotal: ticketsPerGame,
         ticketsSold,
@@ -331,11 +254,22 @@ export default function ScheduleScreen() {
     });
   }, [activeSeasonPass, salesDataHash]);
 
+  // determine if any fetched games are preseason
+  const hasPreseason = useMemo(() => {
+    if (!activeSeasonPass) return false;
+    // Robustly detect preseason games: type === 'Preseason'
+    return (computedGames || []).some(g => g.type === 'Preseason');
+  }, [activeSeasonPass, computedGames]);
+
   const filteredGames = useMemo((): ComputedGame[] => {
     let games = computedGames;
     
     if (selectedFilter !== 'All Games') {
-      games = games.filter(g => g.type === selectedFilter);
+      if (selectedFilter === 'Preseason') {
+        games = games.filter(g => g.type === 'Preseason');
+      } else {
+        games = games.filter(g => g.type === selectedFilter);
+      }
     }
     
     if (searchQuery.trim()) {
@@ -399,7 +333,7 @@ export default function ScheduleScreen() {
     const statuses: Record<string, 'Pending' | 'Paid'> = {};
     
     activeSeasonPass?.seatPairs.forEach(pair => {
-      const existingSale = activeSeasonPass.salesData[game.id]?.[pair.id];
+      const existingSale = activeSeasonPass?.salesData?.[game.id]?.[pair.id];
       if (existingSale) {
         prices[pair.id] = existingSale.price.toString();
         statuses[pair.id] = existingSale.paymentStatus === 'Paid' ? 'Paid' : 'Pending';
@@ -485,35 +419,68 @@ export default function ScheduleScreen() {
               onChangeText={setSearchQuery}
             />
           </View>
-        </View>
-
-        <ScrollView 
-          horizontal 
-          showsHorizontalScrollIndicator={false}
-          style={styles.filterContainer}
-          contentContainerStyle={styles.filterContent}
-        >
-          {['All Games', 'Regular', 'Playoff'].map(filter => (
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            style={styles.filterContainer}
+            contentContainerStyle={styles.filterContent}
+          >
+            {['All Games', 'Preseason', 'Regular', 'Playoff'].map(filter => (
+              <TouchableOpacity
+                key={filter}
+                style={[
+                  styles.filterButton, 
+                  selectedFilter === filter && [styles.filterButtonActive, { backgroundColor: teamPrimaryColor }]
+                ]}
+                onPress={() => setSelectedFilter(filter)}
+              >
+                <Text style={[styles.filterText, selectedFilter === filter && styles.filterTextActive]}>
+                  {filter}
+                </Text>
+              </TouchableOpacity>
+            ))}
             <TouchableOpacity
-              key={filter}
               style={[
-                styles.filterButton, 
-                selectedFilter === filter && [styles.filterButtonActive, { backgroundColor: teamPrimaryColor }]
+                styles.filterButton,
+                styles.refreshFilterButton,
+                (isResyncingSchedule || isLoadingSchedule || !activeSeasonPass) && styles.refreshButtonDisabled,
               ]}
-              onPress={() => setSelectedFilter(filter)}
+              onPress={handleResyncSchedule}
+              disabled={isResyncingSchedule || isLoadingSchedule || !activeSeasonPass}
             >
-              <Text style={[styles.filterText, selectedFilter === filter && styles.filterTextActive]}>
-                {filter}
-              </Text>
+              {isResyncingSchedule || isLoadingSchedule ? (
+                <ActivityIndicator size="small" color={AppColors.textSecondary} />
+              ) : (
+                <>
+                  <RefreshCw size={14} color={AppColors.textSecondary} />
+                  <Text style={styles.filterText}>Refresh</Text>
+                </>
+              )}
             </TouchableOpacity>
-          ))}
-        </ScrollView>
+          </ScrollView>
+        </View>
 
         {duplicateGames.length > 0 && (
           <View style={styles.dupWarning}>
             <Text style={styles.dupWarningText}>⚠ Duplicate games detected – see console for details</Text>
           </View>
         )}
+        {/* Centralized schedule error messaging */}
+        {(() => {
+          const error = activeSeasonPass?.scheduleError;
+          const preCount = activeSeasonPass?.preCount;
+          const regCount = activeSeasonPass?.regCount;
+          const mergedCount = activeSeasonPass?.mergedCount;
+          const msg = getScheduleErrorMessage(error, { preCount, regCount, mergedCount });
+          if (msg) {
+            return (
+              <View style={styles.preseasonNote}>
+                <Text style={styles.preseasonText}>{msg}</Text>
+              </View>
+            );
+          }
+          return null;
+        })()}
         <View style={styles.gamesList}>
           {filteredGames.length === 0 ? (
             <View style={styles.emptyCard}>
@@ -523,6 +490,29 @@ export default function ScheduleScreen() {
                   ? 'Schedule will be loaded for your team'
                   : 'Try adjusting your filters'}
               </Text>
+              {activeSeasonPass?.games?.length === 0 && activeSeasonPass?.scheduleFetchStatus === 'failed' && (
+                <TouchableOpacity
+                  style={styles.refreshButton}
+                  onPress={async () => {
+                    if (activeSeasonPass?.id) {
+                      const result = await resyncSchedule(activeSeasonPass.id);
+                      if (!result.success) {
+                        Alert.alert('Refresh Failed', result.error || 'Could not load schedule. Please try again later.');
+                      }
+                    }
+                  }}
+                  disabled={isLoadingSchedule}
+                >
+                  {isLoadingSchedule ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      <RefreshCw size={16} color="#fff" style={{ marginRight: 8 }} />
+                      <Text style={styles.refreshButtonText}>Retry Loading Schedule</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              )}
             </View>
           ) : (
             filteredGames.map((game) => (
@@ -551,9 +541,9 @@ export default function ScheduleScreen() {
 
                   <View style={styles.gameInfo}>
                     <View style={styles.gameHeader}>
-                      {getOpponentLogo(game.opponent, game.opponentLogo) ? (
+                      {getOpponentLogo(game.opponent, game.opponentLogo, activeSeasonPass?.leagueId) ? (
                         <Image
-                          source={{ uri: getOpponentLogo(game.opponent, game.opponentLogo) }}
+                          source={{ uri: getOpponentLogo(game.opponent, game.opponentLogo, activeSeasonPass?.leagueId) }}
                           style={[styles.opponentLogo, game.isPast && styles.logoPast]}
                           contentFit="contain"
                         />
@@ -566,7 +556,7 @@ export default function ScheduleScreen() {
                         </View>
                       )}
                     </View>
-                    <Text style={styles.opponent}>{game.opponent}</Text>
+                    <Text style={styles.opponent}>{game.opponentDisplay || game.opponent}</Text>
                     <Text style={styles.gameTime}>{game.time}</Text>
                     <View style={styles.ticketStatusRow}>
                       <Text style={styles.ticketStatus}>
@@ -584,6 +574,7 @@ export default function ScheduleScreen() {
         </View>
 
         <AppFooter />
+
       </ScrollView>
 
       <Modal
@@ -610,9 +601,9 @@ export default function ScheduleScreen() {
             {selectedGame && (
               <ScrollView style={styles.modalContent} showsVerticalScrollIndicator={false}>
                 <View style={styles.gameDetailHeader}>
-                  {getOpponentLogo(selectedGame.opponent, selectedGame.opponentLogo) ? (
+                  {getOpponentLogo(selectedGame.opponent, selectedGame.opponentLogo, activeSeasonPass?.leagueId) ? (
                     <Image
-                      source={{ uri: getOpponentLogo(selectedGame.opponent, selectedGame.opponentLogo) }}
+                      source={{ uri: getOpponentLogo(selectedGame.opponent, selectedGame.opponentLogo, activeSeasonPass?.leagueId) }}
                       style={styles.modalOpponentLogo}
                       contentFit="contain"
                     />
@@ -620,7 +611,7 @@ export default function ScheduleScreen() {
                     <View style={[styles.modalOpponentLogo, styles.logoPlaceholder]} />
                   )}
                   <View style={styles.gameDetailInfo}>
-                    <Text style={styles.modalOpponent}>{selectedGame.opponent}</Text>
+                    <Text style={styles.modalOpponent}>{selectedGame.opponentDisplay || selectedGame.opponent}</Text>
                     <Text style={styles.modalDate}>{selectedGame.month} {selectedGame.day} • {selectedGame.time}</Text>
                     {!!selectedGame.gameNumber && (
                       <View style={[styles.modalGameBadge, { backgroundColor: teamPrimaryColor }]}>
@@ -633,7 +624,7 @@ export default function ScheduleScreen() {
                 <View style={styles.seatPairsSection}>
                   <Text style={styles.sectionTitle}>Seat Pairs</Text>
                   {activeSeasonPass?.seatPairs.map((pair) => {
-                    const existingSale = activeSeasonPass.salesData[selectedGame.id]?.[pair.id];
+                    const existingSale = activeSeasonPass?.salesData?.[selectedGame.id]?.[pair.id];
                     const currentStatus = editingStatuses[pair.id] || 'Pending';
                     const isPaid = currentStatus === 'Paid';
                     
@@ -704,6 +695,7 @@ const styles = StyleSheet.create({
     backgroundColor: AppColors.white,
   },
   searchInputContainer: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: AppColors.gray,
@@ -724,6 +716,17 @@ const styles = StyleSheet.create({
   filterContent: {
     paddingHorizontal: 16,
     gap: 8,
+  },
+  refreshButtonDisabled: {
+    opacity: 0.5,
+  },
+  refreshFilterButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+    borderStyle: 'dashed',
   },
   filterButton: {
     paddingHorizontal: 12,
@@ -768,6 +771,22 @@ const styles = StyleSheet.create({
     color: AppColors.textSecondary,
     textAlign: 'center',
   },
+  refreshButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: AppColors.primary,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
+    marginTop: 16,
+    minWidth: 200,
+  },
+  refreshButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600' as const,
+  },
   dupWarning: {
     backgroundColor: '#ffdddd',
     padding: 8,
@@ -777,6 +796,18 @@ const styles = StyleSheet.create({
   dupWarningText: {
     color: '#990000',
     fontWeight: '700' as const,
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  preseasonNote: {
+    backgroundColor: '#fff9e6',
+    padding: 8,
+    borderRadius: 8,
+    marginHorizontal: 10,
+    marginTop: 6,
+  },
+  preseasonText: {
+    color: '#665500',
     fontSize: 12,
     textAlign: 'center',
   },

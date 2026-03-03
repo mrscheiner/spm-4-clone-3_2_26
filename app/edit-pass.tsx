@@ -16,10 +16,10 @@ import { ChevronLeft, Plus, Trash2, Save } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 
-import { AppColors } from '@/constants/appColors';
-import { SeatPair } from '@/constants/types';
-import { useSeasonPass } from '@/providers/SeasonPassProvider';
-import { buildGradientFromPass, getTeamTheme } from '@/constants/teamThemes';
+import { AppColors } from '../constants/appColors';
+import { SeatPair } from '../constants/types';
+import { useSeasonPass } from '../providers/SeasonPassProvider';
+import { buildGradientFromPass, getTeamTheme } from '../constants/teamThemes';
 import { LinearGradient } from 'expo-linear-gradient';
 
 export default function EditPassScreen() {

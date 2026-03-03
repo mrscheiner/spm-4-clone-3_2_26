@@ -20,9 +20,9 @@ import {
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 
-import { AppColors } from '@/constants/appColors';
-import { resetAllData, STORAGE_PREFIX } from '@/constants/storage';
-import { useSeasonPass } from '@/providers/SeasonPassProvider';
+import { AppColors } from '../constants/appColors';
+import { resetAllData, STORAGE_PREFIX } from '../constants/storage';
+import { useSeasonPass } from '../providers/SeasonPassProvider';
 
 export default function DeveloperSettings() {
   const router = useRouter();

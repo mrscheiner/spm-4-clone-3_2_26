@@ -1,21 +1,21 @@
 {
   "expo": {
-    "name": "SPM 2 Repository",
-    "slug": "spm-2-repository",
-    "version": "3.0.0",
+    "name": "SPM 4",
+    "slug": "spm-4",
+    "version": "4.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/seasonpass-logo.png",
     "scheme": "rork-app",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/images/splash-icon.png",
+      "image": "./assets/images/seasonpass-logo.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "app.rork.spm-2-repository",
+      "bundleIdentifier": "app.rork.spm-4",
       "buildNumber": "1",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -27,10 +27,11 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "foregroundImage": "./assets/images/adaptive-icon-square.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "app.rork.spm_2_repository"
+      "package": "app.rork.spm_4",
+      "versionCode": 4
     },
     "web": {
       "favicon": "./assets/images/favicon.png"
@@ -52,9 +53,11 @@
       "router": {
         "origin": "https://rork.com/"
       },
+      "EXPO_PUBLIC_RORK_API_BASE_URL": "https://spm-api.nsp-2-repository.workers.dev",
       "eas": {
         "projectId": "c153f46d-2405-4caf-8672-cd0b9fd0f5f5"
       }
-    }
+    },
+    "owner": "mrscheiner"
   }
 }

@@ -3,12 +3,13 @@ import superjson from "superjson";
 
 // tRPC v11 context type
 interface CreateContextOptions {
-  req: Request;
+  req: Request & { env?: Record<string, any> };
 }
 
 export const createContext = async (opts: CreateContextOptions) => {
   return {
     req: opts.req,
+    env: opts.req.env || {},
   };
 };
 

@@ -6,12 +6,12 @@ import { useMemo, useCallback, useState } from "react";
 import * as Haptics from 'expo-haptics';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 
-import { AppColors } from "@/constants/appColors";
-import { useSeasonPass } from "@/providers/SeasonPassProvider";
-import { useEvents } from "@/providers/EventsProvider";
-import { StandaloneEvent } from "@/constants/types";
-import AppFooter from "@/components/AppFooter";
-import { useAppTheme } from "@/components/AppThemeProvider";
+import { AppColors } from "../../constants/appColors";
+import { useSeasonPass } from "../../providers/SeasonPassProvider";
+import { useEvents } from "../../providers/EventsProvider";
+import { StandaloneEvent } from "../../constants/types";
+import AppFooter from "../../components/AppFooter";
+import { useAppTheme } from "../../components/AppThemeProvider";
 
 interface EventFormData {
   eventName: string;
@@ -237,11 +237,11 @@ function EventsScreen() {
           <View style={styles.summaryCards}>
             <View style={styles.summaryCard}>
               <Text style={styles.summaryLabel}>Total Cost</Text>
-              <Text style={[styles.summaryValue, { color: AppColors.accent }]}>${summary.totalPaid.toFixed(2)}</Text>
+              <Text numberOfLines={1} style={[styles.summaryValue, { color: AppColors.accent }]}>${summary.totalPaid.toFixed(2)}</Text>
             </View>
             <View style={styles.summaryCard}>
               <Text style={styles.summaryLabel}>Total Revenue</Text>
-              <Text style={[styles.summaryValue, { color: AppColors.success }]}>${summary.totalSold.toFixed(2)}</Text>
+              <Text numberOfLines={1} style={[styles.summaryValue, { color: AppColors.success }]}>${summary.totalSold.toFixed(2)}</Text>
             </View>
             <View style={styles.summaryCard}>
               <Text style={styles.summaryLabel}>Net</Text>
@@ -635,6 +635,7 @@ const styles = StyleSheet.create({
   },
   summaryCard: {
     flex: 1,
+    minWidth: 0,
     backgroundColor: AppColors.white,
     borderRadius: 10,
     padding: 10,
@@ -653,6 +654,7 @@ const styles = StyleSheet.create({
   summaryValue: {
     fontSize: 15,
     fontWeight: '700' as const,
+    flexShrink: 1,
   },
   eventsSection: {
     padding: 14,

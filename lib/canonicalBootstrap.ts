@@ -4,7 +4,7 @@ import {
   CANONICAL_VERSION_KEY,
   APP_STORAGE_KEYS,
   STORAGE_KEY_PREFIX,
-} from '@/constants/canonicalData';
+} from '../constants/canonicalData';
 
 async function clearAppStorageKeys(): Promise<void> {
   console.log('[CanonicalBootstrap] Clearing app storage keys...');
