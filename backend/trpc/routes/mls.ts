@@ -243,6 +243,7 @@ export interface MlsGame {
   type: 'Regular' | 'Preseason';
   dateTimeISO: string;
   isHome: boolean;
+  gameNumber?: number;
 }
 
 // Cache for MLS schedule responses (24-72 hours as specified)
@@ -430,6 +431,11 @@ async function fetchMlsTeamSchedule(
         console.log(`[MLS] Applied ${gamesAdded} manual game override(s) for ${abbr} ${season}`);
       }
     }
+
+    // Assign game numbers after final sort
+    games.forEach((game, idx) => {
+      game.gameNumber = idx + 1;
+    });
 
     // Validate game count - log warning if not exactly 17 home games
     const expectedHomeGames = 17;

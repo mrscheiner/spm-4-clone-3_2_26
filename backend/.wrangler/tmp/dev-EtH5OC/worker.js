@@ -8475,6 +8475,9 @@ async function fetchMlsTeamSchedule(teamAbbreviation, season) {
         console.log(`[MLS] Applied ${gamesAdded} manual game override(s) for ${abbr} ${season}`);
       }
     }
+    games.forEach((game, idx) => {
+      game.gameNumber = idx + 1;
+    });
     const expectedHomeGames = 17;
     if (games.length !== expectedHomeGames && games.length > 0) {
       console.warn(`[MLS] WARNING: ${abbr} has ${games.length} home games for ${season}, expected ${expectedHomeGames}. Check for missing games in MLS_MANUAL_GAME_OVERRIDES.`);
