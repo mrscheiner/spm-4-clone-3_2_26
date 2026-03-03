@@ -104,6 +104,145 @@ const MLS_NAME_TO_ABBREV: Record<string, string> = {
 
 // league-specific alias map copied from schedule.tsx; export for reuse
 export const LEAGUE_ALIASES: Record<string, Record<string, string>> = {
+  nfl: {
+    // Full team names (exact match)
+    'arizona cardinals': 'ari-nfl',
+    'atlanta falcons': 'atl-nfl',
+    'baltimore ravens': 'bal',
+    'buffalo bills': 'buf-nfl',
+    'carolina panthers': 'car-nfl',
+    'chicago bears': 'chi-nfl',
+    'cincinnati bengals': 'cin',
+    'cleveland browns': 'cle-nfl',
+    'dallas cowboys': 'dal-nfl',
+    'denver broncos': 'den-nfl',
+    'detroit lions': 'det-nfl',
+    'green bay packers': 'gb',
+    'houston texans': 'hou-nfl',
+    'indianapolis colts': 'ind-nfl',
+    'jacksonville jaguars': 'jax',
+    'kansas city chiefs': 'kc',
+    'las vegas raiders': 'lv',
+    'los angeles chargers': 'lac-nfl',
+    'los angeles rams': 'lar',
+    'miami dolphins': 'mia-nfl',
+    'minnesota vikings': 'min-nfl',
+    'new england patriots': 'ne',
+    'new orleans saints': 'no',
+    'new york giants': 'nyg',
+    'new york jets': 'nyj',
+    'philadelphia eagles': 'phi-nfl',
+    'pittsburgh steelers': 'pit-nfl',
+    'san francisco 49ers': 'sf',
+    'seattle seahawks': 'sea-nfl',
+    'tampa bay buccaneers': 'tb',
+    'tennessee titans': 'ten',
+    'washington commanders': 'was-nfl',
+    // Team nicknames
+    cardinals: 'ari-nfl',
+    falcons: 'atl-nfl',
+    ravens: 'bal',
+    bills: 'buf-nfl',
+    panthers: 'car-nfl',
+    bears: 'chi-nfl',
+    bengals: 'cin',
+    browns: 'cle-nfl',
+    cowboys: 'dal-nfl',
+    broncos: 'den-nfl',
+    lions: 'det-nfl',
+    packers: 'gb',
+    texans: 'hou-nfl',
+    colts: 'ind-nfl',
+    jaguars: 'jax',
+    chiefs: 'kc',
+    raiders: 'lv',
+    chargers: 'lac-nfl',
+    rams: 'lar',
+    dolphins: 'mia-nfl',
+    vikings: 'min-nfl',
+    patriots: 'ne',
+    pats: 'ne',
+    saints: 'no',
+    giants: 'nyg',
+    jets: 'nyj',
+    eagles: 'phi-nfl',
+    steelers: 'pit-nfl',
+    '49ers': 'sf',
+    niners: 'sf',
+    seahawks: 'sea-nfl',
+    buccaneers: 'tb',
+    bucs: 'tb',
+    titans: 'ten',
+    commanders: 'was-nfl',
+    // City names
+    arizona: 'ari-nfl',
+    atlanta: 'atl-nfl',
+    baltimore: 'bal',
+    buffalo: 'buf-nfl',
+    carolina: 'car-nfl',
+    chicago: 'chi-nfl',
+    cincinnati: 'cin',
+    cleveland: 'cle-nfl',
+    dallas: 'dal-nfl',
+    denver: 'den-nfl',
+    detroit: 'det-nfl',
+    'green bay': 'gb',
+    houston: 'hou-nfl',
+    indianapolis: 'ind-nfl',
+    jacksonville: 'jax',
+    'kansas city': 'kc',
+    'las vegas': 'lv',
+    'la chargers': 'lac-nfl',
+    'la rams': 'lar',
+    miami: 'mia-nfl',
+    minnesota: 'min-nfl',
+    'new england': 'ne',
+    'new orleans': 'no',
+    'ny giants': 'nyg',
+    'ny jets': 'nyj',
+    philadelphia: 'phi-nfl',
+    pittsburgh: 'pit-nfl',
+    'san francisco': 'sf',
+    seattle: 'sea-nfl',
+    'tampa bay': 'tb',
+    tampa: 'tb',
+    tennessee: 'ten',
+    washington: 'was-nfl',
+    // Abbreviations
+    ari: 'ari-nfl',
+    atl: 'atl-nfl',
+    bal: 'bal',
+    buf: 'buf-nfl',
+    car: 'car-nfl',
+    chi: 'chi-nfl',
+    cin: 'cin',
+    cle: 'cle-nfl',
+    dal: 'dal-nfl',
+    den: 'den-nfl',
+    det: 'det-nfl',
+    gb: 'gb',
+    hou: 'hou-nfl',
+    ind: 'ind-nfl',
+    jax: 'jax',
+    kc: 'kc',
+    lv: 'lv',
+    lac: 'lac-nfl',
+    lar: 'lar',
+    mia: 'mia-nfl',
+    min: 'min-nfl',
+    ne: 'ne',
+    no: 'no',
+    nyg: 'nyg',
+    nyj: 'nyj',
+    phi: 'phi-nfl',
+    pit: 'pit-nfl',
+    sf: 'sf',
+    sea: 'sea-nfl',
+    tb: 'tb',
+    ten: 'ten',
+    was: 'was-nfl',
+    wsh: 'was-nfl',
+  },
   nhl: {
     blackhawks: 'chi',
     chicago: 'chi',
@@ -307,6 +446,12 @@ export const LEAGUE_ALIASES: Record<string, Record<string, string>> = {
 export function normalizeOpponentName(raw: string, leagueId?: string): string {
   if (!raw) return raw;
   const cleanName = raw.replace(/^vs\s+/i, '').trim().toLowerCase();
+  
+  // Handle NFL BYE weeks
+  if (cleanName === 'bye' || cleanName === 'bye week') {
+    return 'Bye Week';
+  }
+  
   const teams = leagueId ? getTeamsByLeague(leagueId) || [] : NHL_TEAMS;
   const aliasMap = leagueId && LEAGUE_ALIASES[leagueId.toLowerCase()]
     ? LEAGUE_ALIASES[leagueId.toLowerCase()]
@@ -369,6 +514,16 @@ export function getOpponentLogo(opponentName: string, storedLogo?: string, leagu
   if (storedLogo) return storedLogo;
   
   const cleanName = opponentName.replace(/^vs\s+/i, '').trim();
+  const cleanNameLower = cleanName.toLowerCase();
+  
+  // Handle BYE weeks - return league logo
+  if (cleanNameLower === 'bye' || cleanNameLower === 'bye week') {
+    if (leagueId?.toLowerCase() === 'nfl') {
+      return 'https://a.espncdn.com/i/teamlogos/leagues/500/nfl.png';
+    }
+    // Could add other leagues here if needed
+    return undefined;
+  }
   
   // For MLS, use ESPN CDN logos
   if (leagueId?.toLowerCase() === 'mls') {
@@ -376,8 +531,6 @@ export function getOpponentLogo(opponentName: string, storedLogo?: string, leagu
     if (mlsLogo) return mlsLogo;
     return undefined;
   }
-  
-  const cleanNameLower = cleanName.toLowerCase();
   
   // For other leagues, use the existing logic
   const teams = leagueId ? getTeamsByLeague(leagueId) || [] : NHL_TEAMS || [];

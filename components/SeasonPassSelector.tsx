@@ -140,19 +140,19 @@ export default function SeasonPassSelector() {
               </TouchableOpacity>
               <TouchableOpacity
                 disabled={!selectedPassId}
-                onPress={() => selectedPassId && handleDelete(selectedPassId)}
-                style={styles.actionButton}
-                activeOpacity={0.7}
-              >
-                <Trash2 size={18} color={AppColors.textPrimary} />
-              </TouchableOpacity>
-              <TouchableOpacity
-                disabled={!selectedPassId}
                 onPress={() => selectedPassId && handleSelect(selectedPassId)}
                 style={styles.actionButton}
                 activeOpacity={0.7}
               >
                 <Check size={18} color={AppColors.textPrimary} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                disabled={!selectedPassId}
+                onPress={() => selectedPassId && handleDelete(selectedPassId)}
+                style={styles.actionButton}
+                activeOpacity={0.7}
+              >
+                <Trash2 size={18} color={AppColors.textPrimary} />
               </TouchableOpacity>
             </View>
           </View>

@@ -182,22 +182,26 @@ async function fetchScheduleViaSportsdata(pass: {
         return { games: [], error: 'NO_SCHEDULE', preCount, regCount, mergedCount, seasonYearChosen };
       }
       // Normalize to Game[] shape expected by the app
-      const mappedGames = teamGames.map((g: any, idx: number) => ({
-        id: g.gameId || `game_${idx}`,
-        date: g.dateTime ? new Date(g.dateTime).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '',
-        month: g.dateTime ? new Date(g.dateTime).toLocaleString('en-US', { month: 'short' }) : '',
-        day: g.dateTime ? String(new Date(g.dateTime).getDate()) : '',
-        opponent: normalizeOpponentName(g.awayTeam, pass.leagueId),
-        opponentLogo: undefined,
-        venueName: g.venue,
-        time: g.dateTime ? new Date(g.dateTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '',
-        ticketStatus: 'Available',
-        isPaid: false,
-        // gameNumber will be assigned later by reorderAndRenumber
-        type: g.seasonType === 'PRE' ? 'Preseason' : 'Regular',
-        dateTimeISO: g.dateTime,
-        isHome: true,
-      }));
+      const mappedGames = teamGames.map((g: any, idx: number) => {
+        const opponentName = normalizeOpponentName(g.awayTeam, pass.leagueId);
+        const opponentLogo = getOpponentLogo(opponentName, undefined, pass.leagueId);
+        return {
+          id: g.gameId || `game_${idx}`,
+          date: g.dateTime ? new Date(g.dateTime).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '',
+          month: g.dateTime ? new Date(g.dateTime).toLocaleString('en-US', { month: 'short' }) : '',
+          day: g.dateTime ? String(new Date(g.dateTime).getDate()) : '',
+          opponent: opponentName,
+          opponentLogo,
+          venueName: g.venue,
+          time: g.dateTime ? new Date(g.dateTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '',
+          ticketStatus: 'Available',
+          isPaid: false,
+          // gameNumber will be assigned later by reorderAndRenumber
+          type: g.seasonType === 'PRE' ? 'Preseason' : 'Regular',
+          dateTimeISO: g.dateTime,
+          isHome: true,
+        };
+      });
       console.log('[ScheduleFetch] ✅ Sportsdata merged proxy returned', mappedGames.length, 'games');
       return { games: mappedGames, error: null, preCount, regCount, mergedCount, seasonYearChosen };
     }
@@ -1693,6 +1697,53 @@ export const SeasonPassProvider: FC<{ children?: ReactNode }> = ({ children }) =
     }
   } catch (e) {
     console.warn('[SeasonPass] bundle version migration failed', e);
+  }
+
+  // Migration: sync teamLogoUrl with current leagues.ts values
+  // (fixes passes created before logo URLs were updated)
+  let teamLogoSynced = false;
+  passes = passes.map(p => {
+    const teams = getTeamsByLeague(p.leagueId);
+    const currentTeam = teams.find(t => t.id === p.teamId);
+    if (currentTeam && p.teamLogoUrl !== currentTeam.logoUrl) {
+      console.log('[SeasonPass] Syncing teamLogoUrl for', p.teamName, ':', p.teamLogoUrl, '=>', currentTeam.logoUrl);
+      teamLogoSynced = true;
+      return { ...p, teamLogoUrl: currentTeam.logoUrl };
+    }
+    return p;
+  });
+  if (teamLogoSynced) {
+    console.log('[SeasonPass] Migration: synced team logo URLs with current leagues.ts');
+    try {
+      await AsyncStorage.setItem(SEASON_PASSES_KEY, JSON.stringify(passes));
+    } catch (e) {
+      console.warn('[SeasonPass] Failed to persist teamLogoUrl sync', e);
+    }
+  }
+
+  // Migration: Force update all opponent logos to use current ESPN CDN URLs
+  // This fixes issues where incorrect logos were cached (e.g., all teams showing Patriots logo)
+  let opponentLogoRefreshed = false;
+  passes = passes.map(p => {
+    const gamesClone: Game[] = JSON.parse(JSON.stringify(p.games || []));
+    gamesClone.forEach((g: any) => {
+      // Always re-lookup the logo to ensure we have the correct one
+      const freshLogo = getOpponentLogo(g.opponent || '', undefined, p.leagueId);
+      if (freshLogo && g.opponentLogo !== freshLogo) {
+        console.log('[SeasonPass] Updating opponent logo for', g.opponent, ':', g.opponentLogo?.slice(-30), '=>', freshLogo.slice(-30));
+        g.opponentLogo = freshLogo;
+        opponentLogoRefreshed = true;
+      }
+    });
+    return { ...p, games: gamesClone };
+  });
+  if (opponentLogoRefreshed) {
+    console.log('[SeasonPass] Migration: refreshed opponent logos with current URLs');
+    try {
+      await AsyncStorage.setItem(SEASON_PASSES_KEY, JSON.stringify(passes));
+    } catch (e) {
+      console.warn('[SeasonPass] Failed to persist opponent logo refresh', e);
+    }
   }
 
   setSeasonPasses(passes);
