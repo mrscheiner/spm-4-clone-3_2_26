@@ -1,8 +1,8 @@
 
-import * as z from "zod";
-import { createTRPCRouter, publicProcedure } from "../create-context";
-import { loadLeagueScheduleAllTeams, LeagueKey, testHomeFiltering } from "./sportsdataio-helper";
-import { getTeamsByLeague } from "../../../constants/leagues";
+    import * as z from "zod";
+    import { createTRPCRouter, publicProcedure } from "../create-context";
+    import { loadLeagueScheduleAllTeams, LeagueKey, testHomeFiltering } from "./sportsdataio-helper";
+    import { getTeamsByLeague } from "../../../constants/leagues";
 
 export const sportsdataRouter = createTRPCRouter({
   // Returns merged, normalized, home-only schedules for all teams in a league
@@ -50,7 +50,10 @@ export const sportsdataRouter = createTRPCRouter({
       if (!parsedInput || typeof parsedInput !== 'object' || !parsedInput.leagueId) {
         return { error: 'MISSING_LEAGUE_ID', events: [] };
       }
-      const requestedAbbr = parsedInput.teamAbbreviation ? String(parsedInput.teamAbbreviation).toUpperCase() : undefined;
+      const leagueKey = parsedInput.leagueId.toLowerCase() as LeagueKey;
+      let requestedAbbr = parsedInput.teamAbbreviation ? String(parsedInput.teamAbbreviation).toUpperCase() : undefined;
+      // Map common aliases for NBA teams (e.g., GSW -> GS for SportsDataIO)
+      if (leagueKey === 'nba' && requestedAbbr === 'GSW') requestedAbbr = 'GS';
       let key: string | undefined;
       // Try SPORTSDATAIO_API_KEY first (wrangler.toml), then SPORTSDATA_API_KEY
       if (ctx?.env && ctx.env.SPORTSDATAIO_API_KEY) {
@@ -67,7 +70,6 @@ export const sportsdataRouter = createTRPCRouter({
         return { error: "API_KEY_MISSING", events: [] };
       }
       console.log('[DEBUG] API key found, length:', key.length);
-      const leagueKey = parsedInput.leagueId.toLowerCase() as LeagueKey;
       
       // MLS is handled by the dedicated mls.getTeamSchedule endpoint.
       // Reject MLS requests to this endpoint to prevent accidental usage.
@@ -94,10 +96,20 @@ export const sportsdataRouter = createTRPCRouter({
       // Attach team info for each homeGamesByTeam entry
       let homeGamesByTeamWithMeta: Record<string, any> = {};
       for (const t of teams) {
-        homeGamesByTeamWithMeta[t.abbreviation] = {
-          team: t,
-          games: result.homeGamesByTeam[t.abbreviation] || [],
-        };
+        // For Warriors, allow both GS and GSW as keys
+        const abbrs = t.abbreviation === 'GS' ? ['GS', 'GSW'] : [t.abbreviation];
+        for (const abbr of abbrs) {
+          homeGamesByTeamWithMeta[abbr] = {
+            team: t,
+            games: result.homeGamesByTeam['GS'] || [],
+          };
+        }
+        if (t.abbreviation !== 'GS') {
+          homeGamesByTeamWithMeta[t.abbreviation] = {
+            team: t,
+            games: result.homeGamesByTeam[t.abbreviation] || [],
+          };
+        }
       }
       return {
         seasonYearChosen: result.seasonYearChosen,

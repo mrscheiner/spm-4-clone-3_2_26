@@ -1,5 +1,8 @@
+
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter } from "./trpc/app-router";
+// Cloudflare Workers type
+import type { ExecutionContext } from '@cloudflare/workers-types';
 
 export default {
 	async fetch(request: Request, env: Record<string, unknown>, ctx: ExecutionContext) {

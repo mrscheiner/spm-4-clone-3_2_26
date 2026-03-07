@@ -320,37 +320,44 @@ export default function DashboardScreen() {
                 <Text style={styles.emptySubtext}>Your recent ticket sales will appear here</Text>
               </View>
             ) : (
-              recentSales.map((sale) => (
-                <View key={sale.id} style={styles.saleCard}>
-                  <View style={styles.saleHeader}>
-                    <Text style={styles.gameNumber}>Game {sale.gameNumber} •</Text>
-                  </View>
-                  <View style={styles.saleContent}>
-                    {sale.opponentLogo ? (
-                      <Image
-                        source={{ uri: sale.opponentLogo }}
-                        style={styles.teamLogo}
-                        contentFit="contain"
-                      />
-                    ) : (
-                      <View style={[styles.teamLogo, styles.logoPlaceholder]} />
-                    )}
-                    <View style={styles.saleDetails}>
-                      <Text style={styles.opponent}>{sale.opponent}</Text>
-                      <Text style={styles.seatInfo}>
-                        Section {sale.section} • Row {sale.row} • Seats {sale.seats}
-                      </Text>
-                      <Text style={styles.soldDate}>Sold: {sale.soldDateFormatted}</Text>
+              recentSales.map((sale, idx) => {
+                // Defensive: ensure all key fields exist, fallback to index if not
+                const safeId = sale.id || `sale-${idx}`;
+                const safeGameNumber = sale.gameNumber || 'unknown';
+                const safeSoldDate = sale.soldDate || String(idx);
+                return (
+                  <View key={`${safeId}-${safeGameNumber}-${safeSoldDate}`} style={styles.saleCard}>
+                    <View style={styles.saleHeader}>
+                      <Text style={styles.gameNumber}>Game {sale.gameNumber} •</Text>
                     </View>
-                    <View style={styles.priceSection}>
-                      <Text style={styles.price}>${sale.price.toFixed(2)}</Text>
-                      <View style={[styles.statusBadge, sale.status === 'Pending' ? styles.pendingBadge : styles.perSeatBadge]}>
-                        <Text style={styles.statusText}>{sale.status}</Text>
+                    <View style={styles.saleContent}>
+                      {sale.opponentLogo ? (
+                        <Image
+                          source={{ uri: sale.opponentLogo }}
+                          style={styles.teamLogo}
+                          contentFit="contain"
+                        />
+                      ) : (
+                        <View style={[styles.teamLogo, styles.logoPlaceholder]} />
+                      )}
+                      <View style={styles.saleDetails}>
+                        <Text style={styles.opponent}>{sale.opponent}</Text>
+                        <Text style={styles.seatInfo}>
+                          Section {sale.section} • Row {sale.row} • Seats {sale.seats}
+                        </Text>
+                        <Text style={styles.soldDate}>Sold: {sale.soldDateFormatted}</Text>
+                      </View>
+                      <View style={styles.priceSection}>
+                        <Text style={styles.price}>${(sale.price ?? 0).toFixed(2)}</Text>
+                        <View style={[styles.statusBadge, sale.status === 'Pending' ? styles.pendingBadge : styles.perSeatBadge]}>
+                          <Text style={styles.statusText}>{sale.status}</Text>
+                        </View>
                       </View>
                     </View>
                   </View>
-                </View>
-              ))
+                );
+              })
+            )
             )}
           </View>
 
@@ -404,7 +411,7 @@ export default function DashboardScreen() {
                     </View>
                     <View style={styles.modalSalesContainer}>
                       {group.sales.map((sale) => (
-                        <View key={sale.id} style={styles.modalSaleRow}>
+                        <View key={`${sale.id}-${sale.section}-${sale.soldDate}`} style={styles.modalSaleRow}>
                           <View style={styles.modalSaleRowInfo}>
                             <Text style={styles.modalSaleRowSeats}>
                               Sec {sale.section} • Row {sale.row} • Seats {sale.seats}
@@ -412,7 +419,7 @@ export default function DashboardScreen() {
                             <Text style={styles.modalSaleRowDate}>Sold: {sale.soldDateFormatted}</Text>
                           </View>
                           <View style={styles.modalSaleRowPrice}>
-                            <Text style={styles.modalSaleRowAmount}>${sale.price.toFixed(2)}</Text>
+                            <Text style={styles.modalSaleRowAmount}>${(sale.price ?? 0).toFixed(2)}</Text>
                             <View style={[styles.modalMiniStatusBadge, sale.status === 'Pending' ? styles.pendingBadge : styles.perSeatBadge]}>
                               <Text style={styles.miniStatusText}>{sale.status}</Text>
                             </View>

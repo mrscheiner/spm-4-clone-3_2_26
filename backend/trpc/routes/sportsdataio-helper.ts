@@ -111,18 +111,19 @@ export async function loadLeagueScheduleAllTeams(
       try {
         // NFL, NBA, NHL, MLB: use Schedules or Games endpoint
         let endpoint = '';
+        let version: 'v3' | 'v4' = 'v3';
+        // Only assign v4 for mls, but this code path is not for mls
         if (league === 'nfl') endpoint = `Schedules/${preStr}`;
         else if (league === 'nba') endpoint = `SchedulesBasic/${preStr}`;
         else if (league === 'nhl') endpoint = `Games/${preStr}`;
         else if (league === 'mlb') endpoint = `Games/${preStr}`;
-        gamesPRE = await sportsdataioFetch({ league, endpoint, apiKey, version: league === 'mls' ? 'v4' : 'v3' });
+        gamesPRE = await sportsdataioFetch({ league, endpoint, apiKey, version });
         log(`[SDIO][DEBUG] Raw gamesPRE for ${league} ${seasonYear}:`, Array.isArray(gamesPRE) ? gamesPRE.length : typeof gamesPRE, gamesPRE && gamesPRE.length > 0 ? gamesPRE.slice(0, 2) : gamesPRE);
         if (league === 'nfl') endpoint = `Schedules/${regStr}`;
         else if (league === 'nba') endpoint = `SchedulesBasic/${regStr}`;
         else if (league === 'nhl') endpoint = `Games/${regStr}`;
         else if (league === 'mlb') endpoint = `Games/${regStr}`;
-        else if (league === 'mls') endpoint = `Schedule/8/${seasonYear}`;
-        gamesREG = await sportsdataioFetch({ league, endpoint, apiKey, version: league === 'mls' ? 'v4' : 'v3' });
+        gamesREG = await sportsdataioFetch({ league, endpoint, apiKey, version });
         if ((gamesPRE && gamesPRE.length) || (gamesREG && gamesREG.length)) {
           found = true;
           break;
@@ -138,7 +139,11 @@ export async function loadLeagueScheduleAllTeams(
   const allGames: NormalizedGame[] = [];
   // For NHL, if gamesPRE has games but they are not labeled as preseason, force seasonType to 'PRE'
   const addGames = (arr: any[], seasonType: 'PRE' | 'REG') => {
-    for (const g of arr || []) {
+    if (!Array.isArray(arr) || arr.length === 0) {
+      log(`[SDIO][WARN] No games found for ${league} ${seasonType}`);
+      return;
+    }
+    for (const g of arr) {
       let homeTeam = g.HomeTeam || g.homeTeam || g.HomeTeamId || g.home_team_id;
       let awayTeam = g.AwayTeam || g.awayTeam || g.AwayTeamId || g.away_team_id;
       if (league === 'mls') {
@@ -146,16 +151,22 @@ export async function loadLeagueScheduleAllTeams(
         awayTeam = g.AwayTeamId;
       }
       let normalizedSeasonType = seasonType;
-      // If NHL and using PRE array, force 'PRE' (since API may not label it)
       if (league === 'nhl' && seasonType === 'PRE') {
         normalizedSeasonType = 'PRE';
+      }
+      const gameId = g.GameID?.toString() || g.GameId?.toString() || g.Id?.toString() || g.id?.toString() || '';
+      const dateTime = g.DateTime || g.Day || g.Date || g.date;
+      // Validation: skip if required fields are missing
+      if (!gameId || !dateTime || !homeTeam || !awayTeam) {
+        log(`[SDIO][SKIP] Skipping game with missing fields:`, { gameId, dateTime, homeTeam, awayTeam, raw: g });
+        continue;
       }
       allGames.push({
         league,
         seasonYear,
         seasonType: normalizedSeasonType,
-        gameId: g.GameID?.toString() || g.GameId?.toString() || g.Id?.toString() || g.id?.toString() || '',
-        dateTime: g.DateTime || g.Day || g.Date || g.date,
+        gameId,
+        dateTime,
         homeTeam,
         awayTeam,
         venue: g.Stadium || g.Venue || g.venue,

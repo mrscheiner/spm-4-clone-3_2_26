@@ -207,20 +207,21 @@ export default function ScheduleScreen() {
 
   const computedGames = useMemo((): ComputedGame[] => {
     if (!activeSeasonPass) return [];
-    
     const now = Date.now();
     const seatPairIds = activeSeasonPass.seatPairs.map(p => p.id);
     const ticketsPerGame = activeSeasonPass.seatPairs.reduce((acc, p) => acc + parseSeatsCount(p.seats), 0);
-    
     console.log('[Schedule] Computing games - ticketsPerGame:', ticketsPerGame, 'seatPairs:', activeSeasonPass.seatPairs.length, 'salesDataHash length:', salesDataHash.length);
-    
-    return (activeSeasonPass.games || []).map(game => {
+    // Deduplicate by dateTimeISO (or date)
+    const seen = new Set<string>();
+    const dedupedGames: ComputedGame[] = [];
+    for (const game of (activeSeasonPass.games || [])) {
       const gameDate = game.dateTimeISO ? new Date(game.dateTimeISO).getTime() : new Date(game.date).getTime();
       const isPast = gameDate < now;
-      
+      const key = game.dateTimeISO || game.date;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
       const pairsForGame = (activeSeasonPass.salesData || {})[game.id] || {};
       const salesCount = Object.keys(pairsForGame).length;
-      
       const ticketsSold = Object.values(pairsForGame).reduce((acc, sale) => {
         if (!sale) return acc;
         const sc = typeof sale.seatCount === 'number' && sale.seatCount > 0 
@@ -229,20 +230,15 @@ export default function ScheduleScreen() {
         return acc + sc;
       }, 0);
       const ticketsAvailable = Math.max(0, ticketsPerGame - ticketsSold);
-      
       if (salesCount > 0) {
         console.log('[Schedule] Game', game.gameNumber, game.opponent, '- sales:', salesCount, 'sold:', ticketsSold, 'available:', ticketsAvailable);
       }
-      
       const allPaid = seatPairIds.every(pairId => {
         const sale = pairsForGame[pairId];
         return sale && (sale.paymentStatus === 'Paid' || sale.paymentStatus.toLowerCase() === 'paid');
       });
-      
-      // human-friendly opponent name: normalize to full team name if possible
       const opponentDisplay = normalizeOpponentName(game.opponent || '', activeSeasonPass.leagueId);
-
-      return {
+      dedupedGames.push({
         ...game,
         opponentDisplay,
         isPast,
@@ -250,8 +246,9 @@ export default function ScheduleScreen() {
         ticketsSold,
         ticketsAvailable,
         allPaid,
-      };
-    });
+      });
+    }
+    return dedupedGames;
   }, [activeSeasonPass, salesDataHash]);
 
   // determine if any fetched games are preseason
@@ -515,61 +512,64 @@ export default function ScheduleScreen() {
               )}
             </View>
           ) : (
-            filteredGames.map((game) => (
-              <TouchableOpacity 
-                key={game.id} 
-                style={[
-                  styles.gameCard,
-                  game.isPast && styles.gameCardPast
-                ]}
-                onPress={() => openGameDetail(game)}
-                activeOpacity={0.7}
-              >
-                <LinearGradient
-                  colors={[...gradientColors]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.gameCardGradient}
+            filteredGames
+              .filter((game) => game.id && (game.dateTimeISO || game.date))
+              .map((game, idx) => (
+                <TouchableOpacity
+                  key={(game.id && (game.dateTimeISO || game.date))
+                    ? `${game.id}-${game.dateTimeISO || game.date}`
+                    : `fallback-${idx}`}
+                  style={[
+                    styles.gameCard,
+                    game.isPast && styles.gameCardPast
+                  ]}
+                  onPress={() => openGameDetail(game)}
+                  activeOpacity={0.7}
                 >
-                  {game.isPast && <View style={styles.pastOverlay} />}
-                  <View style={styles.dateBox}>
-                    <Text style={styles.dateMonth}>
-                      {game.month}
-                    </Text>
-                    <Text style={styles.dateDay}>{game.day}</Text>
-                  </View>
-
-                  <View style={styles.gameInfo}>
-                    <View style={styles.gameHeader}>
-                      {getOpponentLogo(game.opponent, game.opponentLogo, activeSeasonPass?.leagueId) ? (
-                        <Image
-                          source={{ uri: getOpponentLogo(game.opponent, game.opponentLogo, activeSeasonPass?.leagueId) }}
-                          style={[styles.opponentLogo, game.isPast && styles.logoPast]}
-                          contentFit="contain"
-                        />
-                      ) : (
-                        <View style={[styles.opponentLogo, styles.logoPlaceholder]} />
-                      )}
-                      {!!game.gameNumber && (
-                        <View style={styles.gameNumberBadge}>
-                          <Text style={styles.gameNumberText}>#{game.gameNumber}</Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={styles.opponent}>{game.opponentDisplay || game.opponent}</Text>
-                    <Text style={styles.gameTime}>{game.time}</Text>
-                    <View style={styles.ticketStatusRow}>
-                      <Text style={styles.ticketStatus}>
-                        {game.ticketsAvailable === 0 
-                          ? 'No seats available' 
-                          : `${game.ticketsAvailable} seats available`}
+                  <LinearGradient
+                    colors={[...gradientColors]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.gameCardGradient}
+                  >
+                    {game.isPast && <View style={styles.pastOverlay} />}
+                    <View style={styles.dateBox}>
+                      <Text style={styles.dateMonth}>
+                        {game.month}
                       </Text>
-                      <StatusBadge isPaid={game.allPaid} />
+                      <Text style={styles.dateDay}>{game.day}</Text>
                     </View>
-                  </View>
-                </LinearGradient>
-              </TouchableOpacity>
-            ))
+                    <View style={styles.gameInfo}>
+                      <View style={styles.gameHeader}>
+                        {getOpponentLogo(game.opponent, game.opponentLogo, activeSeasonPass?.leagueId) ? (
+                          <Image
+                            source={{ uri: getOpponentLogo(game.opponent, game.opponentLogo, activeSeasonPass?.leagueId) }}
+                            style={[styles.opponentLogo, game.isPast && styles.logoPast]}
+                            contentFit="contain"
+                          />
+                        ) : (
+                          <View style={[styles.opponentLogo, styles.logoPlaceholder]} />
+                        )}
+                        {!!game.gameNumber && (
+                          <View style={styles.gameNumberBadge}>
+                            <Text style={styles.gameNumberText}>#{game.gameNumber}</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.opponent}>{game.opponentDisplay || game.opponent}</Text>
+                      <Text style={styles.gameTime}>{game.time}</Text>
+                      <View style={styles.ticketStatusRow}>
+                        <Text style={styles.ticketStatus}>
+                          {game.ticketsAvailable === 0 
+                            ? 'No seats available' 
+                            : `${game.ticketsAvailable} seats available`}
+                        </Text>
+                        <StatusBadge isPaid={game.allPaid} />
+                      </View>
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
+              ))
           )}
         </View>
 

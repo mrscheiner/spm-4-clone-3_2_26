@@ -19,10 +19,11 @@ app.use("*", cors({
 // temporary debug route to inspect query parameters
 app.get("/__debug", async (c) => {
   try {
-    const q = Object.fromEntries(c.req.query().entries ? c.req.query().entries() : Object.entries(c.req.query()));
+    // c.req.query() returns an object, so just use it directly
+    const q = c.req.query();
     return c.json({ url: (c.req as any).url, query: q });
   } catch (e) {
-    return c.json({ error: e?.message || e });
+    return c.json({ error: typeof e === 'object' && e !== null && 'message' in e ? (e as any).message : String(e) });
   }
 });
 

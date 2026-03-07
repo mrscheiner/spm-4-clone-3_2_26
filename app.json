@@ -4,8 +4,15 @@
     "slug": "spm-2-repository",
     "version": "4.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/seasonpass-logo.png",
-    "scheme": "rork-app",
+    "extra": {
+      "EXPO_PUBLIC_RORK_API_BASE_URL": "https://spm-api.nsp-2-repository.workers.dev",
+      "router": {
+        "origin": "https://rork.com/"
+      },
+      "eas": {
+        "projectId": "c153f46d-2405-4caf-8672-cd0b9fd0f5f5"
+      }
+    },
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
@@ -48,15 +55,6 @@
     ],
     "experiments": {
       "typedRoutes": true
-    },
-    "extra": {
-      "router": {
-        "origin": "https://rork.com/"
-      },
-      "EXPO_PUBLIC_RORK_API_BASE_URL": "https://spm-api.nsp-2-repository.workers.dev",
-      "eas": {
-        "projectId": "c153f46d-2405-4caf-8672-cd0b9fd0f5f5"
-      }
     },
     "owner": "mrscheiner"
   }

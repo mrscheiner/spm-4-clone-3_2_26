@@ -1,8 +1,5 @@
-import { trpcClient } from '../providers/SeasonPassProvider';
 
-// The SeasonPassProvider exports trpcClient indirectly; but it's easier to
-// import directly from lib/trpc.
-import { trpc } from '../lib/trpc';
+import { trpcClient } from '../lib/trpc';
 
 async function run() {
   console.log('calling getSchedule mutate');
